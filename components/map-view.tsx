@@ -3,8 +3,21 @@
 import type { Landmark } from "@/lib/landmarks"
 import L from "leaflet"
 import "leaflet/dist/leaflet.css"
-import { useEffect } from "react"
-import { CircleMarker, MapContainer, Marker, Popup, TileLayer, useMap } from "react-leaflet"
+import { useEffect, useRef } from "react"
+
+type MapViewProps = {
+  center: [number, number]
+  landmarks: Landmark[]
+  visitedIds: Set<string>
+  selectedId: string | null
+  onSelect: (id: string) => void
+}
+
+function themeColor(variable: string, fallback: string) {
+  if (typeof window === "undefined") return fallback
+  const value = getComputedStyle(document.documentElement).getPropertyValue(variable).trim()
+  return value || fallback
+}
 
 function pinIcon(color: string, selected: boolean) {
   const size = selected ? 28 : 20
@@ -21,75 +34,89 @@ function pinIcon(color: string, selected: boolean) {
   })
 }
 
-// Read the CSS variables so pins match the active theme.
-function useThemeColor(variable: string, fallback: string) {
-  if (typeof window === "undefined") return fallback
-  const value = getComputedStyle(document.documentElement).getPropertyValue(variable).trim()
-  return value || fallback
-}
-
-function Recenter({ center, zoom }: { center: [number, number]; zoom: number }) {
-  const map = useMap()
-  useEffect(() => {
-    map.setView(center, zoom, { animate: true })
-  }, [center, zoom, map])
-  return null
-}
-
-type MapViewProps = {
-  center: [number, number]
-  landmarks: Landmark[]
-  visitedIds: Set<string>
-  selectedId: string | null
-  onSelect: (id: string) => void
-}
-
+// This component drives Leaflet directly (rather than through react-leaflet)
+// so we fully control the map lifecycle. react-leaflet v5 under React 19
+// StrictMode double-mounts the MapContainer onto the same DOM node, which
+// throws "Map container is being reused by another instance" and crashes the
+// page. Creating the map in an effect and calling map.remove() on cleanup
+// makes remounts (StrictMode, HMR, navigation) safe.
 export default function MapView({ center, landmarks, visitedIds, selectedId, onSelect }: MapViewProps) {
-  const primary = useThemeColor("--primary", "oklch(0.52 0.14 39)")
-  const accent = useThemeColor("--accent", "oklch(0.75 0.11 72)")
-  const zoom = 14
+  const containerRef = useRef<HTMLDivElement>(null)
+  const mapRef = useRef<L.Map | null>(null)
+  const markerLayerRef = useRef<L.LayerGroup | null>(null)
+  const meMarkerRef = useRef<L.CircleMarker | null>(null)
+  // Keep the latest onSelect without forcing marker rebuilds.
+  const onSelectRef = useRef(onSelect)
+  onSelectRef.current = onSelect
 
-  return (
-    <MapContainer
-      center={center}
-      zoom={zoom}
-      scrollWheelZoom
-      className="h-full w-full"
-      style={{ background: "var(--muted)" }}
-    >
-      <TileLayer
-        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-        url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
-      />
-      <Recenter center={center} zoom={zoom} />
+  // Create the map exactly once, and tear it down on unmount.
+  useEffect(() => {
+    if (!containerRef.current || mapRef.current) return
 
-      {/* Your current location */}
-      <CircleMarker
-        center={center}
-        radius={9}
-        pathOptions={{ color: "#ffffff", weight: 3, fillColor: "#2563eb", fillOpacity: 1 }}
-      >
-        <Popup>You are here</Popup>
-      </CircleMarker>
+    const map = L.map(containerRef.current, {
+      center,
+      zoom: 14,
+      scrollWheelZoom: true,
+    })
+    mapRef.current = map
 
-      {landmarks.map((lm) => {
-        const visited = visitedIds.has(lm.id)
-        return (
-          <Marker
-            key={lm.id}
-            position={[lm.lat, lm.lng]}
-            icon={pinIcon(visited ? accent : primary, selectedId === lm.id)}
-            eventHandlers={{ click: () => onSelect(lm.id) }}
-          >
-            <Popup>
-              <strong>{lm.name}</strong>
-              <br />
-              {lm.category}
-              {visited ? " · visited" : ""}
-            </Popup>
-          </Marker>
+    L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    }).addTo(map)
+
+    markerLayerRef.current = L.layerGroup().addTo(map)
+    meMarkerRef.current = L.circleMarker(center, {
+      radius: 9,
+      color: "#ffffff",
+      weight: 3,
+      fillColor: "#2563eb",
+      fillOpacity: 1,
+    })
+      .addTo(map)
+      .bindPopup("You are here")
+
+    // Leaflet occasionally needs a nudge once its container has real size.
+    setTimeout(() => map.invalidateSize(), 0)
+
+    return () => {
+      map.remove()
+      mapRef.current = null
+      markerLayerRef.current = null
+      meMarkerRef.current = null
+    }
+    // Intentionally run once; live updates are handled in the effects below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Recenter the map and the "you are here" marker when the location changes.
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    map.setView(center, map.getZoom(), { animate: true })
+    meMarkerRef.current?.setLatLng(center)
+  }, [center])
+
+  // Rebuild landmark markers whenever the data or selection changes.
+  useEffect(() => {
+    const layer = markerLayerRef.current
+    if (!layer) return
+    layer.clearLayers()
+
+    const primary = themeColor("--primary", "oklch(0.52 0.14 39)")
+    const accent = themeColor("--accent", "oklch(0.75 0.11 72)")
+
+    for (const lm of landmarks) {
+      const visited = visitedIds.has(lm.id)
+      const marker = L.marker([lm.lat, lm.lng], {
+        icon: pinIcon(visited ? accent : primary, selectedId === lm.id),
+      })
+        .bindPopup(
+          `<strong>${lm.name}</strong><br/>${lm.category ?? "Landmark"}${visited ? " · visited" : ""}`,
         )
-      })}
-    </MapContainer>
-  )
+        .on("click", () => onSelectRef.current(lm.id))
+      layer.addLayer(marker)
+    }
+  }, [landmarks, visitedIds, selectedId])
+
+  return <div ref={containerRef} className="h-full w-full" style={{ background: "var(--muted)" }} />
 }

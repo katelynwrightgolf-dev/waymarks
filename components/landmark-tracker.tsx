@@ -46,6 +46,12 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
   const visitedIds = useMemo(() => new Set(visits.map((v) => v.landmarkId)), [visits])
   const recentVisit = visits[0] ?? null
 
+  // Stable [lat, lng] reference so the map only recenters when we actually move.
+  const mapCenter = useMemo<[number, number] | null>(
+    () => (position ? [position.lat, position.lng] : null),
+    [position],
+  )
+
   const loadLandmarks = useCallback(async (lat: number, lng: number, r: number) => {
     setLoadingLandmarks(true)
     setLandmarkError(null)
@@ -240,10 +246,10 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
       </section>
 
       {/* Map */}
-      {position ? (
+      {mapCenter ? (
         <div className="h-72 overflow-hidden rounded-3xl border border-border">
           <MapView
-            center={[position.lat, position.lng]}
+            center={mapCenter}
             landmarks={landmarks}
             visitedIds={visitedIds}
             selectedId={selectedId}
