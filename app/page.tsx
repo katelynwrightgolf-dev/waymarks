@@ -1,23 +1,27 @@
-export default function Page() {
+import { getVisits } from "@/app/actions/visits"
+import { LandmarkTracker } from "@/components/landmark-tracker"
+import { MapPinned } from "lucide-react"
+
+export default async function HomePage() {
+  const initialVisits = await getVisits()
+
   return (
-    <main className="relative flex min-h-screen items-center justify-center bg-[color:light-dark(#fff,#000)] text-[color:light-dark(#000,#fff)]">
-      <svg
-        aria-hidden="true"
-        className="size-20"
-        fill="none"
-        viewBox="0 0 20 20"
-        xmlns="http://www.w3.org/2000/svg"
-        stroke="currentColor"
-        strokeWidth="0.5"
-      >
-        <path
-          d="M14.2 14.2H17V6.9375C17 4.76288 15.2371 3 13.0625 3H5.8V5.8M14.2 14.2V7.79063L7.79062 14.2H14.2ZM14.2 14.2V17H6.9375C4.76288 17 3 15.2371 3 13.0625V5.8H5.8M5.8 5.8V12.2313L12.2313 5.8H5.8Z"
-          strokeLinejoin="round"
-        />
-      </svg>
-      <p className="absolute left-1/2 top-[calc(50%+56px)] -translate-x-1/2 whitespace-nowrap text-sm font-medium text-muted-foreground">
-        Your v0 generation will show here.
-      </p>
+    <main className="mx-auto min-h-dvh w-full max-w-xl px-4 pb-16 pt-6">
+      <header className="mb-6 flex items-center gap-3">
+        <div className="flex size-11 items-center justify-center rounded-2xl bg-primary text-primary-foreground">
+          <MapPinned className="size-6" aria-hidden />
+        </div>
+        <div>
+          <h1 className="font-serif text-2xl font-semibold leading-tight text-foreground">Waymarks</h1>
+          <p className="text-sm text-muted-foreground">Historic stops from the road</p>
+        </div>
+      </header>
+
+      <LandmarkTracker initialVisits={initialVisits} />
+
+      <footer className="mt-10 text-center text-xs text-muted-foreground">
+        Landmark data from OpenStreetMap contributors
+      </footer>
     </main>
   )
 }

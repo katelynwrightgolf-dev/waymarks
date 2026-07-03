@@ -95,32 +95,52 @@ export async function fetchNearbyLandmarks(
     out center tags 80;
   `
 
+  // Public Overpass mirrors. They are frequently overloaded (504/429), so we
+  // try each one and retry a couple of times with a short backoff.
   const endpoints = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
   ]
 
   let data: { elements: OverpassElement[] } | null = null
   let lastError: unknown = null
 
-  for (const endpoint of endpoints) {
-    try {
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: "data=" + encodeURIComponent(query),
-        // Cache identical location queries briefly to be kind to the API.
-        next: { revalidate: 300 },
-      })
-      if (!res.ok) {
-        lastError = new Error(`Overpass responded ${res.status}`)
-        continue
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+  outer: for (let attempt = 0; attempt < 2 && !data; attempt++) {
+    for (const endpoint of endpoints) {
+      // Abort a hanging mirror after 20s so we can fail over to the next one.
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 20000)
+      try {
+        const res = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+            // Overpass rejects requests without a descriptive User-Agent (HTTP 406).
+            "User-Agent": "Waymarks/1.0 (historic landmark tracker)",
+            Accept: "application/json",
+          },
+          body: "data=" + encodeURIComponent(query),
+          signal: controller.signal,
+          // Cache identical location queries briefly to be kind to the API.
+          next: { revalidate: 300 },
+        })
+        if (!res.ok) {
+          lastError = new Error(`Overpass responded ${res.status}`)
+          continue
+        }
+        data = await res.json()
+        break outer
+      } catch (err) {
+        lastError = err
+      } finally {
+        clearTimeout(timer)
       }
-      data = await res.json()
-      break
-    } catch (err) {
-      lastError = err
     }
+    // Brief backoff before a second pass through the mirrors.
+    if (!data) await sleep(1200)
   }
 
   if (!data) {

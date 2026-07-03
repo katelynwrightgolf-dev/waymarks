@@ -25,7 +25,7 @@ const RADIUS_OPTIONS = [
   { label: "6 mi", value: 9700 },
 ]
 
-const WHO_OPTIONS = ["Us", "Me", "Phoebe"]
+const WHO_OPTIONS = ["Us", "Me", "Matt"]
 
 type GeoStatus = "idle" | "locating" | "ready" | "error"
 
