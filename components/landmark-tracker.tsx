@@ -72,73 +72,126 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
     }
   }, [])
 
-  const locate = useCallback(() => {
-    if (!("geolocation" in navigator)) {
-      setGeoStatus("error")
-      setGeoError("Your device doesn't support location.")
-      return
+  // Set the active location and immediately load its landmarks.
+  const applyLocation = useCallback(
+    (lat: number, lng: number, label: string) => {
+      setPosition({ lat, lng })
+      setLocationLabel(label)
+      setGeoStatus("ready")
+      setGeoError(null)
+      void loadLandmarks(lat, lng, radius)
+    },
+    [loadLandmarks, radius],
+  )
+
+  // Approximate location from the network — works even when GPS is blocked or
+  // unavailable, which is common inside embedded browser previews and iframes.
+  const locateByIp = useCallback(async () => {
+    try {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 6000)
+      const res = await fetch("https://ipwho.is/", { signal: controller.signal })
+      clearTimeout(timer)
+      const data = await res.json()
+      if (data && data.success !== false && typeof data.latitude === "number") {
+        const place = [data.city, data.region].filter(Boolean).join(", ")
+        applyLocation(data.latitude, data.longitude, place ? `${place} (approx.)` : "Approx. location")
+        return true
+      }
+    } catch {
+      /* fall through to the manual search */
     }
+    return false
+  }, [applyLocation])
+
+  const locate = useCallback(() => {
     setGeoStatus("locating")
     setGeoError(null)
 
+    // No GPS support at all → go straight to the network-based estimate.
+    if (!("geolocation" in navigator)) {
+      void locateByIp().then((ok) => {
+        if (!ok) {
+          setGeoStatus("error")
+          setGeoError("Couldn't detect your location. Search for a city below instead.")
+        }
+      })
+      return
+    }
+
     let settled = false
 
-    // Safety net: some environments (notably preview iframes) never fire the
-    // success OR error callback, leaving the button spinning forever. If we
-    // don't hear back in 9s, surface the manual search instead of hanging.
-    const hardTimeout = setTimeout(() => {
-      if (settled) return
-      settled = true
-      setGeoStatus("error")
-      setGeoError(
-        "We couldn't get your location automatically. Search for where you are instead — it works the same way.",
-      )
-    }, 9000)
-
-    // Step 1: get a fast, approximate fix. Low accuracy returns almost
-    // instantly and we happily accept a recently cached position, so the
-    // user sees nearby landmarks right away instead of waiting on GPS.
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        if (settled) return
         settled = true
-        clearTimeout(hardTimeout)
-        const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude }
-        setPosition(coords)
-        setGeoStatus("ready")
-        void loadLandmarks(coords.lat, coords.lng, radius)
+        applyLocation(pos.coords.latitude, pos.coords.longitude, "Your current location")
 
-        // Step 2: quietly refine with a precise GPS fix in the background.
-        // If it meaningfully differs, refresh the list; otherwise stay put.
+        // Quietly refine with a precise GPS fix in the background.
         navigator.geolocation.getCurrentPosition(
           (precise) => {
-            const next = { lat: precise.coords.latitude, lng: precise.coords.longitude }
             const moved =
-              Math.abs(next.lat - coords.lat) > 0.0015 || Math.abs(next.lng - coords.lng) > 0.0015
-            setPosition(next)
-            if (moved) void loadLandmarks(next.lat, next.lng, radius)
+              Math.abs(precise.coords.latitude - pos.coords.latitude) > 0.0015 ||
+              Math.abs(precise.coords.longitude - pos.coords.longitude) > 0.0015
+            if (moved)
+              applyLocation(precise.coords.latitude, precise.coords.longitude, "Your current location")
           },
           () => {
-            /* keep the fast fix if precise lookup fails */
+            /* keep the fast fix if the precise lookup fails */
           },
           { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 },
         )
       },
-      (err) => {
+      async (err) => {
         if (settled) return
-        settled = true
-        clearTimeout(hardTimeout)
-        setGeoStatus("error")
-        setGeoError(
-          err.code === err.PERMISSION_DENIED
-            ? "Location permission was denied. You can search for where you are instead."
-            : "Couldn't get your location. Search for where you are instead.",
-        )
+        // GPS denied/blocked/failed → automatically fall back to a network
+        // estimate so the app still works instead of leaving you stuck.
+        const ok = await locateByIp()
+        if (!ok) {
+          setGeoStatus("error")
+          setGeoError(
+            err.code === err.PERMISSION_DENIED
+              ? "Location access is blocked here. Search for a city below to explore landmarks."
+              : "Couldn't get your location. Search for a city below instead.",
+          )
+        }
       },
-      // Accept a position up to ~5 minutes old so we respond immediately.
+      // Accept a fast, slightly stale low-accuracy fix, then refine above.
       { enableHighAccuracy: false, timeout: 8000, maximumAge: 300000 },
     )
-  }, [loadLandmarks, radius])
+  }, [applyLocation, locateByIp])
+
+  // Manual fallback: look up a city or town by name via a free geocoder.
+  const searchCity = useCallback(
+    async (event: FormEvent) => {
+      event.preventDefault()
+      const name = query.trim()
+      if (!name) return
+      setSearching(true)
+      setGeoError(null)
+      try {
+        const controller = new AbortController()
+        const timer = setTimeout(() => controller.abort(), 8000)
+        const res = await fetch(
+          `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(name)}&count=1&language=en`,
+          { signal: controller.signal },
+        )
+        clearTimeout(timer)
+        const data = await res.json()
+        const hit = data?.results?.[0]
+        if (!hit) {
+          setGeoError(`Couldn't find "${name}". Try a nearby city or town.`)
+          return
+        }
+        const label = [hit.name, hit.admin1].filter(Boolean).join(", ")
+        applyLocation(hit.latitude, hit.longitude, label)
+      } catch {
+        setGeoError("Search failed. Please try again.")
+      } finally {
+        setSearching(false)
+      }
+    },
+    [query, applyLocation],
+  )
 
   // Manual location: geocode a place name (city, landmark, address) so the app
   // works even when device GPS is blocked or denied.
@@ -235,39 +288,27 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
           {geoStatus === "ready" ? "Update my location" : "Use my current location"}
         </button>
 
-        <div className="my-3 flex items-center gap-3 text-xs font-medium text-muted-foreground">
-          <span className="h-px flex-1 bg-border" />
-          OR SEARCH A PLACE
-          <span className="h-px flex-1 bg-border" />
-        </div>
-
-        <form
-          onSubmit={(e) => {
-            e.preventDefault()
-            searchLocation(searchQuery)
-          }}
-          className="flex gap-2"
-        >
+        <form onSubmit={searchCity} className="mt-3 flex gap-2">
           <div className="relative flex-1">
             <Search
               className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
               aria-hidden
             />
             <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="e.g. Washington DC, Seattle, Faneuil Hall"
-              aria-label="Search for a location"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              enterKeyHint="search"
+              placeholder="Or search a city or town"
+              aria-label="Search for a city or town"
               className="min-h-12 w-full rounded-full border border-border bg-background pr-4 pl-9 text-base text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none"
             />
           </div>
           <button
             type="submit"
-            disabled={geoStatus === "locating" || !searchQuery.trim()}
-            className="inline-flex min-h-12 items-center justify-center rounded-full bg-secondary px-5 text-base font-semibold text-secondary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
+            disabled={searching || !query.trim()}
+            className="inline-flex min-h-12 items-center justify-center rounded-full border border-border px-4 text-sm font-semibold text-foreground transition-colors hover:bg-muted disabled:opacity-50"
           >
-            Go
+            {searching ? <Loader2 className="size-4 animate-spin" aria-hidden /> : "Search"}
           </button>
         </form>
 
@@ -280,6 +321,12 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
 
         {position ? (
           <div className="mt-4">
+            {locationLabel ? (
+              <p className="mb-3 flex items-center gap-1.5 text-sm font-medium text-card-foreground">
+                <MapPin className="size-4 shrink-0 text-primary" aria-hidden />
+                {locationLabel}
+              </p>
+            ) : null}
             <div className="mb-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">
               Search radius
             </div>
@@ -322,7 +369,7 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
           </div>
         ) : (
           <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
-            Tap above and we&apos;ll pull historic buildings and landmarks from OpenStreetMap right where you are.
+            Tap above, or search a city, and we&apos;ll pull up historic buildings and landmarks near that spot.
           </p>
         )}
       </section>
@@ -370,7 +417,7 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
           <div className="flex flex-col gap-3">
             <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
               <Loader2 className="size-4 animate-spin" aria-hidden />
-              Searching OpenStreetMap for landmarks near you…
+              Finding historic landmarks nearby…
             </div>
             {[0, 1, 2, 3].map((i) => (
               <div
@@ -393,7 +440,7 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
           </p>
         ) : !position ? (
           <p className="rounded-2xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
-            Share your location to discover historic landmarks nearby.
+            Use your location or search a city to discover historic landmarks nearby.
           </p>
         ) : (
           <NearbyList
