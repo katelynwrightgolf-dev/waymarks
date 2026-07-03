@@ -3,9 +3,9 @@
 import { checkIn, deleteVisit, getVisits, updateNote } from "@/app/actions/visits"
 import type { Visit } from "@/lib/db/schema"
 import type { Landmark } from "@/lib/landmarks"
-import { AlertTriangle, Compass, Loader2, LocateFixed } from "lucide-react"
+import { AlertTriangle, Compass, Loader2, LocateFixed, MapPin, Search } from "lucide-react"
 import dynamic from "next/dynamic"
-import { useCallback, useMemo, useState } from "react"
+import { type FormEvent, useCallback, useMemo, useState } from "react"
 import { NearbyList } from "./nearby-list"
 import { RecentVisit } from "./recent-visit"
 import { VisitLog } from "./visit-log"
@@ -34,6 +34,9 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
   const [position, setPosition] = useState<{ lat: number; lng: number } | null>(null)
   const [geoStatus, setGeoStatus] = useState<GeoStatus>("idle")
   const [geoError, setGeoError] = useState<string | null>(null)
+  const [locationLabel, setLocationLabel] = useState<string | null>(null)
+  const [query, setQuery] = useState("")
+  const [searching, setSearching] = useState(false)
   const [radius, setRadius] = useState(4800)
   const [landmarks, setLandmarks] = useState<Landmark[]>([])
   const [loadingLandmarks, setLoadingLandmarks] = useState(false)
@@ -42,6 +45,7 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [pendingId, setPendingId] = useState<string | null>(null)
   const [who, setWho] = useState("Us")
+  const [searchQuery, setSearchQuery] = useState("")
 
   const visitedIds = useMemo(() => new Set(visits.map((v) => v.landmarkId)), [visits])
   const recentVisit = visits[0] ?? null
@@ -79,12 +83,26 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
 
     let settled = false
 
+    // Safety net: some environments (notably preview iframes) never fire the
+    // success OR error callback, leaving the button spinning forever. If we
+    // don't hear back in 9s, surface the manual search instead of hanging.
+    const hardTimeout = setTimeout(() => {
+      if (settled) return
+      settled = true
+      setGeoStatus("error")
+      setGeoError(
+        "We couldn't get your location automatically. Search for where you are instead — it works the same way.",
+      )
+    }, 9000)
+
     // Step 1: get a fast, approximate fix. Low accuracy returns almost
     // instantly and we happily accept a recently cached position, so the
     // user sees nearby landmarks right away instead of waiting on GPS.
     navigator.geolocation.getCurrentPosition(
       (pos) => {
+        if (settled) return
         settled = true
+        clearTimeout(hardTimeout)
         const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude }
         setPosition(coords)
         setGeoStatus("ready")
@@ -108,17 +126,45 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
       },
       (err) => {
         if (settled) return
+        settled = true
+        clearTimeout(hardTimeout)
         setGeoStatus("error")
         setGeoError(
           err.code === err.PERMISSION_DENIED
-            ? "Location permission was denied. Enable it in your browser to find nearby landmarks."
-            : "Couldn't get your location. Please try again.",
+            ? "Location permission was denied. You can search for where you are instead."
+            : "Couldn't get your location. Search for where you are instead.",
         )
       },
       // Accept a position up to ~5 minutes old so we respond immediately.
-      { enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 },
+      { enableHighAccuracy: false, timeout: 8000, maximumAge: 300000 },
     )
   }, [loadLandmarks, radius])
+
+  // Manual location: geocode a place name (city, landmark, address) so the app
+  // works even when device GPS is blocked or denied.
+  const searchLocation = useCallback(
+    async (query: string) => {
+      const q = query.trim()
+      if (!q) return
+      setGeoStatus("locating")
+      setGeoError(null)
+      try {
+        const res = await fetch(`/api/geocode?q=${encodeURIComponent(q)}`)
+        const data = await res.json()
+        if (!res.ok || !data.results?.length) {
+          throw new Error(data.error || "We couldn't find that place. Try a nearby city or town.")
+        }
+        const top = data.results[0] as { lat: number; lng: number }
+        setPosition({ lat: top.lat, lng: top.lng })
+        setGeoStatus("ready")
+        void loadLandmarks(top.lat, top.lng, radius)
+      } catch (err) {
+        setGeoStatus("error")
+        setGeoError(err instanceof Error ? err.message : "Location search failed.")
+      }
+    },
+    [loadLandmarks, radius],
+  )
 
   const changeRadius = useCallback(
     (value: number) => {
@@ -188,6 +234,42 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
           )}
           {geoStatus === "ready" ? "Update my location" : "Use my current location"}
         </button>
+
+        <div className="my-3 flex items-center gap-3 text-xs font-medium text-muted-foreground">
+          <span className="h-px flex-1 bg-border" />
+          OR SEARCH A PLACE
+          <span className="h-px flex-1 bg-border" />
+        </div>
+
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            searchLocation(searchQuery)
+          }}
+          className="flex gap-2"
+        >
+          <div className="relative flex-1">
+            <Search
+              className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
+              aria-hidden
+            />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="e.g. Washington DC, Seattle, Faneuil Hall"
+              aria-label="Search for a location"
+              className="min-h-12 w-full rounded-full border border-border bg-background pr-4 pl-9 text-base text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none"
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={geoStatus === "locating" || !searchQuery.trim()}
+            className="inline-flex min-h-12 items-center justify-center rounded-full bg-secondary px-5 text-base font-semibold text-secondary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
+          >
+            Go
+          </button>
+        </form>
 
         {geoError ? (
           <p className="mt-3 flex items-start gap-2 rounded-xl bg-destructive/10 p-3 text-sm text-destructive">
