@@ -1,0 +1,17 @@
+{
+  "name": "Waymarks — Landmarks on the Road",
+  "short_name": "Waymarks",
+  "description": "Find historic buildings and landmarks near you on the road and remember the ones you were just by.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f6efe3",
+  "theme_color": "#8a3d24",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
