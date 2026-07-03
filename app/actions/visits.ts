@@ -19,6 +19,7 @@ export type CheckInInput = {
   note?: string | null
   visitedBy?: string
   wikipedia?: string | null
+  imageUrl?: string | null
 }
 
 export async function checkIn(input: CheckInInput): Promise<Visit> {
@@ -34,6 +35,7 @@ export async function checkIn(input: CheckInInput): Promise<Visit> {
       note: input.note ?? null,
       visitedBy: input.visitedBy?.trim() || "Us",
       wikipedia: input.wikipedia ?? null,
+      imageUrl: input.imageUrl ?? null,
     })
     .returning()
   revalidatePath("/")

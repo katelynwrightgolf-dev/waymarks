@@ -12,6 +12,7 @@ export const visits = pgTable("visits", {
   note: text("note"),
   visitedBy: text("visited_by").notNull().default("Us"),
   wikipedia: text("wikipedia"),
+  imageUrl: text("image_url"),
   visitedAt: timestamp("visited_at", { withTimezone: true }).notNull().defaultNow(),
 })
 

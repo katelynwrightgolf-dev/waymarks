@@ -33,14 +33,23 @@ export function VisitLog({ visits, onDelete, onSaveNote }: VisitLogProps) {
 
         return (
           <li key={visit.id} className="rounded-2xl border border-border bg-card p-4">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
+            <div className="flex items-start gap-3">
+              {visit.imageUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={visit.imageUrl || "/placeholder.svg"}
+                  alt={visit.name}
+                  loading="lazy"
+                  className="size-14 shrink-0 rounded-xl object-cover"
+                />
+              ) : null}
+              <div className="min-w-0 flex-1">
                 <h3 className="font-serif text-lg leading-snug text-card-foreground text-pretty">
                   {visit.name}
                 </h3>
                 <div className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
                   {visit.category ? <span>{visit.category}</span> : null}
-                  <span aria-hidden>·</span>
+                  {visit.category ? <span aria-hidden>·</span> : null}
                   <span>{fullDate(visit.visitedAt)}</span>
                   <span aria-hidden>·</span>
                   <span>{visit.visitedBy}</span>

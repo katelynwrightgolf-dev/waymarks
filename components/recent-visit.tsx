@@ -14,10 +14,22 @@ export function RecentVisit({ visit }: { visit: Visit }) {
       aria-label="Most recent landmark"
       className="relative overflow-hidden rounded-3xl bg-primary p-6 text-primary-foreground shadow-lg"
     >
-      <div className="flex items-center gap-2 text-xs font-semibold tracking-widest uppercase opacity-90">
-        <Navigation className="size-4" aria-hidden />
-        You were just by
-      </div>
+      {visit.imageUrl ? (
+        <>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={visit.imageUrl || "/placeholder.svg"}
+            alt={visit.name}
+            className="absolute inset-0 size-full object-cover"
+          />
+          <div className="absolute inset-0 bg-primary/80" aria-hidden />
+        </>
+      ) : null}
+      <div className="relative">
+        <div className="flex items-center gap-2 text-xs font-semibold tracking-widest uppercase opacity-90">
+          <Navigation className="size-4" aria-hidden />
+          You were just by
+        </div>
 
       <h2 className="mt-2 font-serif text-3xl leading-tight text-balance">{visit.name}</h2>
 
@@ -58,6 +70,7 @@ export function RecentVisit({ visit }: { visit: Visit }) {
             Read more
           </a>
         ) : null}
+        </div>
       </div>
     </section>
   )

@@ -4,77 +4,61 @@
 export type Landmark = {
   id: string
   name: string
-  category: string
+  category: string | null
   lat: number
   lng: number
   description: string | null
   wikipedia: string | null
+  imageUrl: string | null
   distanceMeters?: number
 }
 
-type OverpassElement = {
-  type: "node" | "way" | "relation"
-  id: number
-  lat?: number
-  lon?: number
-  center?: { lat: number; lon: number }
-  tags?: Record<string, string>
+type GeoSearchResult = {
+  pageid: number
+  title: string
+  lat: number
+  lon: number
+  dist: number
 }
 
-// Turn a raw OSM "historic" tag into a friendly, readable category.
-function prettyCategory(tags: Record<string, string>): string {
-  const raw = tags.historic || tags.tourism || tags.building || tags.amenity || "Landmark"
-  const map: Record<string, string> = {
-    monument: "Monument",
-    memorial: "Memorial",
-    building: "Historic Building",
-    church: "Historic Church",
-    castle: "Castle",
-    fort: "Fort",
-    ruins: "Ruins",
-    archaeological_site: "Archaeological Site",
-    battlefield: "Battlefield",
-    manor: "Manor",
-    tower: "Tower",
-    city_gate: "City Gate",
-    heritage: "Heritage Site",
-    attraction: "Attraction",
-    museum: "Museum",
-    ship: "Historic Ship",
-    aircraft: "Historic Aircraft",
-    locomotive: "Historic Locomotive",
-    wayside_cross: "Wayside Cross",
-    wayside_shrine: "Wayside Shrine",
-    boundary_stone: "Boundary Stone",
-    milestone: "Milestone",
+type PageDetail = {
+  pageid: number
+  title: string
+  extract?: string
+  description?: string
+  thumbnail?: { source: string }
+  coordinates?: { lat: number; lon: number }[]
+}
+
+const WIKI_API = "https://en.wikipedia.org/w/api.php"
+
+async function wikiFetch(params: Record<string, string>): Promise<any> {
+  const url = `${WIKI_API}?${new URLSearchParams({ format: "json", origin: "*", ...params })}`
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 8000)
+  try {
+    const res = await fetch(url, {
+      headers: { "User-Agent": "Waymarks/1.0 (historic landmark tracker)" },
+      signal: controller.signal,
+      // Cache identical lookups briefly to keep repeat searches instant.
+      next: { revalidate: 300 },
+    })
+    if (!res.ok) throw new Error(`Wikipedia responded ${res.status}`)
+    return res.json()
+  } finally {
+    clearTimeout(timer)
   }
-  return (
-    map[raw] ||
-    raw
-      .replace(/_/g, " ")
-      .replace(/\b\w/g, (c) => c.toUpperCase())
-  )
 }
 
-function buildDescription(tags: Record<string, string>): string | null {
-  const parts: string[] = []
-  if (tags.inscription) parts.push(tags.inscription)
-  if (tags["heritage:operator"]) parts.push(`Recognized by ${tags["heritage:operator"].toUpperCase()}`)
-  if (tags.start_date) parts.push(`Dates from ${tags.start_date}`)
-  if (tags.architect) parts.push(`Architect: ${tags.architect}`)
-  if (tags.operator) parts.push(`Operated by ${tags.operator}`)
-  return parts.length ? parts.join(" · ") : null
-}
-
-function haversine(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const R = 6371000
-  const toRad = (d: number) => (d * Math.PI) / 180
-  const dLat = toRad(lat2 - lat1)
-  const dLng = toRad(lng2 - lng1)
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2
-  return 2 * R * Math.asin(Math.sqrt(a))
+function trimExtract(extract?: string): string | null {
+  if (!extract) return null
+  const clean = extract.trim()
+  if (!clean) return null
+  // Keep the first sentence or two so cards stay compact.
+  if (clean.length <= 240) return clean
+  const cut = clean.slice(0, 240)
+  const lastStop = cut.lastIndexOf(". ")
+  return (lastStop > 80 ? cut.slice(0, lastStop + 1) : cut.trimEnd() + "…")
 }
 
 export async function fetchNearbyLandmarks(
@@ -82,102 +66,61 @@ export async function fetchNearbyLandmarks(
   lng: number,
   radiusMeters: number,
 ): Promise<Landmark[]> {
-  // Query OpenStreetMap for historic sites and notable attractions nearby.
-  const query = `
-    [out:json][timeout:25];
-    (
-      node["historic"](around:${radiusMeters},${lat},${lng});
-      way["historic"](around:${radiusMeters},${lat},${lng});
-      node["heritage"](around:${radiusMeters},${lat},${lng});
-      way["heritage"](around:${radiusMeters},${lat},${lng});
-      node["tourism"="attraction"]["name"](around:${radiusMeters},${lat},${lng});
-    );
-    out center tags 80;
-  `
+  // Wikipedia's GeoSearch finds notable nearby places (historic buildings,
+  // monuments, landmarks) fast and reliably, and gives us real descriptions
+  // and photos — far quicker than the public Overpass servers.
+  const geo = await wikiFetch({
+    action: "query",
+    list: "geosearch",
+    gscoord: `${lat}|${lng}`,
+    gsradius: String(Math.min(Math.max(radiusMeters, 10), 10000)),
+    gslimit: "50",
+  })
 
-  // Public Overpass mirrors. They are frequently overloaded (504/429), so we
-  // try each one and retry a couple of times with a short backoff.
-  const endpoints = [
-    "https://overpass-api.de/api/interpreter",
-    "https://overpass.kumi.systems/api/interpreter",
-    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
-  ]
+  const results: GeoSearchResult[] = geo?.query?.geosearch ?? []
+  if (results.length === 0) return []
 
-  let data: { elements: OverpassElement[] } | null = null
-  let lastError: unknown = null
-
-  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
-
-  outer: for (let attempt = 0; attempt < 2 && !data; attempt++) {
-    for (const endpoint of endpoints) {
-      // Abort a hanging mirror after 20s so we can fail over to the next one.
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), 20000)
-      try {
-        const res = await fetch(endpoint, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/x-www-form-urlencoded",
-            // Overpass rejects requests without a descriptive User-Agent (HTTP 406).
-            "User-Agent": "Waymarks/1.0 (historic landmark tracker)",
-            Accept: "application/json",
-          },
-          body: "data=" + encodeURIComponent(query),
-          signal: controller.signal,
-          // Cache identical location queries briefly to be kind to the API.
-          next: { revalidate: 300 },
-        })
-        if (!res.ok) {
-          lastError = new Error(`Overpass responded ${res.status}`)
-          continue
-        }
-        data = await res.json()
-        break outer
-      } catch (err) {
-        lastError = err
-      } finally {
-        clearTimeout(timer)
-      }
-    }
-    // Brief backoff before a second pass through the mirrors.
-    if (!data) await sleep(1200)
-  }
-
-  if (!data) {
-    throw lastError instanceof Error ? lastError : new Error("Failed to reach OpenStreetMap")
-  }
-
-  const seen = new Set<string>()
-  const landmarks: Landmark[] = []
-
-  for (const el of data.elements) {
-    const tags = el.tags || {}
-    const name = tags.name || tags["name:en"]
-    if (!name) continue // skip unnamed features — not useful to a traveler
-
-    const coordLat = el.lat ?? el.center?.lat
-    const coordLng = el.lon ?? el.center?.lon
-    if (coordLat == null || coordLng == null) continue
-
-    const id = `${el.type}/${el.id}`
-    const dedupeKey = name.toLowerCase()
-    if (seen.has(dedupeKey)) continue
-    seen.add(dedupeKey)
-
-    landmarks.push({
-      id,
-      name,
-      category: prettyCategory(tags),
-      lat: coordLat,
-      lng: coordLng,
-      description: buildDescription(tags),
-      wikipedia: tags.wikipedia || null,
-      distanceMeters: haversine(lat, lng, coordLat, coordLng),
+  // Fetch descriptions, short descriptions, thumbnails and coordinates for the
+  // found pages. `extracts` allows max 20 pages per request, so batch by 20.
+  const details = new Map<number, PageDetail>()
+  for (let i = 0; i < results.length; i += 20) {
+    const batch = results.slice(i, i + 20)
+    const data = await wikiFetch({
+      action: "query",
+      pageids: batch.map((r) => r.pageid).join("|"),
+      prop: "extracts|pageimages|coordinates|description",
+      exintro: "1",
+      explaintext: "1",
+      piprop: "thumbnail",
+      pithumbsize: "480",
     })
+    const pages: Record<string, PageDetail> = data?.query?.pages ?? {}
+    for (const page of Object.values(pages)) {
+      details.set(page.pageid, page)
+    }
   }
 
+  const landmarks: Landmark[] = results.map((r) => {
+    const detail = details.get(r.pageid)
+    const shortDesc = detail?.description
+    return {
+      id: `wikipedia/${r.pageid}`,
+      name: r.title,
+      // Wikidata's short description (e.g. "Historic house in Boston") makes
+      // a great category line; fall back to a generic label.
+      category: shortDesc ? shortDesc.replace(/\b\w/, (c) => c.toUpperCase()) : "Landmark",
+      lat: r.lat,
+      lng: r.lon,
+      description: trimExtract(detail?.extract),
+      wikipedia: `en:${r.title}`,
+      imageUrl: detail?.thumbnail?.source ?? null,
+      distanceMeters: r.dist,
+    }
+  })
+
+  // Already sorted by distance from the API, but be explicit.
   landmarks.sort((a, b) => (a.distanceMeters ?? 0) - (b.distanceMeters ?? 0))
-  return landmarks.slice(0, 50)
+  return landmarks
 }
 
 export function formatDistance(meters?: number): string {

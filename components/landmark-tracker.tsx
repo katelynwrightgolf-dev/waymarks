@@ -134,6 +134,7 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
           lat: landmark.lat,
           lng: landmark.lng,
           wikipedia: landmark.wikipedia,
+          imageUrl: landmark.imageUrl,
           visitedBy: who,
         })
         const fresh = await getVisits()
@@ -278,9 +279,24 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
 
       {tab === "nearby" ? (
         loadingLandmarks ? (
-          <div className="flex items-center justify-center gap-2 rounded-2xl border border-border bg-card p-8 text-sm text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" aria-hidden />
-            Searching OpenStreetMap…
+          <div className="flex flex-col gap-3">
+            <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" aria-hidden />
+              Searching OpenStreetMap for landmarks near you…
+            </div>
+            {[0, 1, 2, 3].map((i) => (
+              <div
+                key={i}
+                className="flex items-center gap-4 rounded-2xl border border-border bg-card p-4"
+                aria-hidden
+              >
+                <div className="size-11 shrink-0 animate-pulse rounded-full bg-muted" />
+                <div className="flex-1 space-y-2">
+                  <div className="h-4 w-2/3 animate-pulse rounded bg-muted" />
+                  <div className="h-3 w-1/3 animate-pulse rounded bg-muted" />
+                </div>
+              </div>
+            ))}
           </div>
         ) : landmarkError ? (
           <p className="flex items-start gap-2 rounded-2xl bg-destructive/10 p-4 text-sm text-destructive">
