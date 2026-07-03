@@ -70,14 +70,38 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
     }
     setGeoStatus("locating")
     setGeoError(null)
+
+    let settled = false
+
+    // Step 1: get a fast, approximate fix. Low accuracy returns almost
+    // instantly and we happily accept a recently cached position, so the
+    // user sees nearby landmarks right away instead of waiting on GPS.
     navigator.geolocation.getCurrentPosition(
       (pos) => {
+        settled = true
         const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude }
         setPosition(coords)
         setGeoStatus("ready")
         void loadLandmarks(coords.lat, coords.lng, radius)
+
+        // Step 2: quietly refine with a precise GPS fix in the background.
+        // If it meaningfully differs, refresh the list; otherwise stay put.
+        navigator.geolocation.getCurrentPosition(
+          (precise) => {
+            const next = { lat: precise.coords.latitude, lng: precise.coords.longitude }
+            const moved =
+              Math.abs(next.lat - coords.lat) > 0.0015 || Math.abs(next.lng - coords.lng) > 0.0015
+            setPosition(next)
+            if (moved) void loadLandmarks(next.lat, next.lng, radius)
+          },
+          () => {
+            /* keep the fast fix if precise lookup fails */
+          },
+          { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 },
+        )
       },
       (err) => {
+        if (settled) return
         setGeoStatus("error")
         setGeoError(
           err.code === err.PERMISSION_DENIED
@@ -85,7 +109,8 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
             : "Couldn't get your location. Please try again.",
         )
       },
-      { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 },
+      // Accept a position up to ~5 minutes old so we respond immediately.
+      { enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 },
     )
   }, [loadLandmarks, radius])
 
