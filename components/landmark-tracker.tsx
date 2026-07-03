@@ -44,12 +44,21 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
   const [loadingLandmarks, setLoadingLandmarks] = useState(false)
   const [landmarkError, setLandmarkError] = useState<string | null>(null)
   const [tab, setTab] = useState<"nearby" | "visited">("nearby")
+  const [kindFilter, setKindFilter] = useState<"all" | "landmark" | "town">("all")
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [pendingId, setPendingId] = useState<string | null>(null)
   const [who, setWho] = useState("Us")
 
   const visitedIds = useMemo(() => new Set(visits.map((v) => v.landmarkId)), [visits])
   const recentVisit = visits[0] ?? null
+
+  // Split results into towns vs. individual landmarks so we can filter/count.
+  const townCount = useMemo(() => landmarks.filter((l) => l.kind === "town").length, [landmarks])
+  const landmarkCount = landmarks.length - townCount
+  const filteredLandmarks = useMemo(
+    () => (kindFilter === "all" ? landmarks : landmarks.filter((l) => l.kind === kindFilter)),
+    [landmarks, kindFilter],
+  )
 
   // Stable [lat, lng] reference so the map only recenters when we actually move.
   const mapCenter = useMemo<[number, number] | null>(
@@ -351,7 +360,7 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
         <div className="h-72 overflow-hidden rounded-3xl border border-border">
           <MapView
             center={mapCenter}
-            landmarks={landmarks}
+            landmarks={filteredLandmarks}
             visitedIds={visitedIds}
             selectedId={selectedId}
             onSelect={(id) => {
@@ -415,14 +424,38 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
             Use your location or search a city to discover historic landmarks nearby.
           </p>
         ) : (
-          <NearbyList
-            landmarks={landmarks}
-            visitedIds={visitedIds}
-            selectedId={selectedId}
-            pendingId={pendingId}
-            onSelect={setSelectedId}
-            onCheckIn={handleCheckIn}
-          />
+          <div className="flex flex-col gap-3">
+            <div className="flex gap-2">
+              {(
+                [
+                  { key: "all", label: `All (${landmarks.length})` },
+                  { key: "landmark", label: `Landmarks (${landmarkCount})` },
+                  { key: "town", label: `Towns (${townCount})` },
+                ] as const
+              ).map((opt) => (
+                <button
+                  key={opt.key}
+                  type="button"
+                  onClick={() => setKindFilter(opt.key)}
+                  className={`min-h-10 flex-1 rounded-full border px-3 text-sm font-semibold transition-colors ${
+                    kindFilter === opt.key
+                      ? "border-primary bg-primary/10 text-primary"
+                      : "border-border text-muted-foreground hover:bg-muted"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            <NearbyList
+              landmarks={filteredLandmarks}
+              visitedIds={visitedIds}
+              selectedId={selectedId}
+              pendingId={pendingId}
+              onSelect={setSelectedId}
+              onCheckIn={handleCheckIn}
+            />
+          </div>
         )
       ) : (
         <VisitLog visits={visits} onDelete={handleDelete} onSaveNote={handleSaveNote} />
