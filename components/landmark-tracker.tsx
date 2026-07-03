@@ -29,6 +29,8 @@ const WHO_OPTIONS = ["Us", "Me", "Matt"]
 
 type GeoStatus = "idle" | "locating" | "ready" | "error"
 
+type GeoResult = { lat: number; lng: number; label: string }
+
 export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
   const [visits, setVisits] = useState<Visit[]>(initialVisits)
   const [position, setPosition] = useState<{ lat: number; lng: number } | null>(null)
@@ -45,7 +47,6 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [pendingId, setPendingId] = useState<string | null>(null)
   const [who, setWho] = useState("Us")
-  const [searchQuery, setSearchQuery] = useState("")
 
   const visitedIds = useMemo(() => new Set(visits.map((v) => v.landmarkId)), [visits])
   const recentVisit = visits[0] ?? null
@@ -160,63 +161,34 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
     )
   }, [applyLocation, locateByIp])
 
-  // Manual fallback: look up a city or town by name via a free geocoder.
-  const searchCity = useCallback(
+  // Manual location: geocode a place name (city, town, landmark, or address)
+  // through our server route so the app works even when device GPS is blocked
+  // or denied (common inside preview iframes). The route tries multiple
+  // geocoding providers so a real search reliably resolves.
+  const searchLocation = useCallback(
     async (event: FormEvent) => {
       event.preventDefault()
       const name = query.trim()
       if (!name) return
       setSearching(true)
+      setGeoStatus("locating")
       setGeoError(null)
       try {
-        const controller = new AbortController()
-        const timer = setTimeout(() => controller.abort(), 8000)
-        const res = await fetch(
-          `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(name)}&count=1&language=en`,
-          { signal: controller.signal },
-        )
-        clearTimeout(timer)
+        const res = await fetch(`/api/geocode?q=${encodeURIComponent(name)}`)
         const data = await res.json()
-        const hit = data?.results?.[0]
-        if (!hit) {
-          setGeoError(`Couldn't find "${name}". Try a nearby city or town.`)
-          return
+        if (!res.ok || !data.results?.length) {
+          throw new Error(data.error || `We couldn't find "${name}". Try a nearby city or town.`)
         }
-        const label = [hit.name, hit.admin1].filter(Boolean).join(", ")
-        applyLocation(hit.latitude, hit.longitude, label)
-      } catch {
-        setGeoError("Search failed. Please try again.")
+        const top = data.results[0] as GeoResult
+        applyLocation(top.lat, top.lng, top.label)
+      } catch (err) {
+        setGeoStatus("error")
+        setGeoError(err instanceof Error ? err.message : "Location search failed. Please try again.")
       } finally {
         setSearching(false)
       }
     },
     [query, applyLocation],
-  )
-
-  // Manual location: geocode a place name (city, landmark, address) so the app
-  // works even when device GPS is blocked or denied.
-  const searchLocation = useCallback(
-    async (query: string) => {
-      const q = query.trim()
-      if (!q) return
-      setGeoStatus("locating")
-      setGeoError(null)
-      try {
-        const res = await fetch(`/api/geocode?q=${encodeURIComponent(q)}`)
-        const data = await res.json()
-        if (!res.ok || !data.results?.length) {
-          throw new Error(data.error || "We couldn't find that place. Try a nearby city or town.")
-        }
-        const top = data.results[0] as { lat: number; lng: number }
-        setPosition({ lat: top.lat, lng: top.lng })
-        setGeoStatus("ready")
-        void loadLandmarks(top.lat, top.lng, radius)
-      } catch (err) {
-        setGeoStatus("error")
-        setGeoError(err instanceof Error ? err.message : "Location search failed.")
-      }
-    },
-    [loadLandmarks, radius],
   )
 
   const changeRadius = useCallback(
@@ -288,7 +260,7 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
           {geoStatus === "ready" ? "Update my location" : "Use my current location"}
         </button>
 
-        <form onSubmit={searchCity} className="mt-3 flex gap-2">
+        <form onSubmit={searchLocation} className="mt-3 flex gap-2">
           <div className="relative flex-1">
             <Search
               className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
