@@ -94,18 +94,16 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
     [loadLandmarks, radius],
   )
 
-  // Approximate location from the network — works even when GPS is blocked or
-  // unavailable, which is common inside embedded browser previews and iframes.
+  // Approximate location via our SERVER route. Doing this server-side avoids
+  // the cross-origin iframe restrictions that block browser geolocation and
+  // client-side IP lookups inside the preview, so auto-detect actually works.
   const locateByIp = useCallback(async () => {
     try {
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), 6000)
-      const res = await fetch("https://ipwho.is/", { signal: controller.signal })
-      clearTimeout(timer)
+      const res = await fetch("/api/my-location")
+      if (!res.ok) return false
       const data = await res.json()
-      if (data && data.success !== false && typeof data.latitude === "number") {
-        const place = [data.city, data.region].filter(Boolean).join(", ")
-        applyLocation(data.latitude, data.longitude, place ? `${place} (approx.)` : "Approx. location")
+      if (typeof data.lat === "number" && typeof data.lng === "number") {
+        applyLocation(data.lat, data.lng, data.label || "Approximate location")
         return true
       }
     } catch {
@@ -118,55 +116,46 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
     setGeoStatus("locating")
     setGeoError(null)
 
-    // No GPS support at all → go straight to the network-based estimate.
+    // Whoever provides a usable position first wins. GPS is preferred when it
+    // works (most accurate), but inside the preview iframe it's usually blocked
+    // or hangs — so we run the server-side estimate in parallel and show it as
+    // soon as it's ready instead of leaving you stuck on a spinner.
+    let gpsApplied = false
+    let anyApplied = false
+
+    const apply = (lat: number, lng: number, label: string, fromGps: boolean) => {
+      // Don't let a slower IP estimate overwrite a good GPS fix.
+      if (!fromGps && gpsApplied) return
+      if (fromGps) gpsApplied = true
+      anyApplied = true
+      applyLocation(lat, lng, label)
+    }
+
+    // Kick off the server-side estimate immediately (works in the iframe).
+    const ipPromise = locateByIp().then((ok) => ok)
+
     if (!("geolocation" in navigator)) {
-      void locateByIp().then((ok) => {
-        if (!ok) {
+      void ipPromise.then((ok) => {
+        if (!ok && !anyApplied) {
           setGeoStatus("error")
-          setGeoError("Couldn't detect your location. Search for a city below instead.")
+          setGeoError("Couldn't detect your location automatically. Search for where you are below.")
         }
       })
       return
     }
 
-    let settled = false
-
     navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        settled = true
-        applyLocation(pos.coords.latitude, pos.coords.longitude, "Your current location")
-
-        // Quietly refine with a precise GPS fix in the background.
-        navigator.geolocation.getCurrentPosition(
-          (precise) => {
-            const moved =
-              Math.abs(precise.coords.latitude - pos.coords.latitude) > 0.0015 ||
-              Math.abs(precise.coords.longitude - pos.coords.longitude) > 0.0015
-            if (moved)
-              applyLocation(precise.coords.latitude, precise.coords.longitude, "Your current location")
-          },
-          () => {
-            /* keep the fast fix if the precise lookup fails */
-          },
-          { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 },
-        )
-      },
-      async (err) => {
-        if (settled) return
-        // GPS denied/blocked/failed → automatically fall back to a network
-        // estimate so the app still works instead of leaving you stuck.
-        const ok = await locateByIp()
-        if (!ok) {
+      (pos) => apply(pos.coords.latitude, pos.coords.longitude, "Your current location", true),
+      async () => {
+        // GPS blocked/failed → make sure the IP estimate had its chance before
+        // showing an error, then guide to manual search.
+        const ok = await ipPromise
+        if (!ok && !anyApplied) {
           setGeoStatus("error")
-          setGeoError(
-            err.code === err.PERMISSION_DENIED
-              ? "Location access is blocked here. Search for a city below to explore landmarks."
-              : "Couldn't get your location. Search for a city below instead.",
-          )
+          setGeoError("Location access is blocked here. Search for where you are below instead.")
         }
       },
-      // Accept a fast, slightly stale low-accuracy fix, then refine above.
-      { enableHighAccuracy: false, timeout: 8000, maximumAge: 300000 },
+      { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 },
     )
   }, [applyLocation, locateByIp])
 
