@@ -5,7 +5,7 @@ import type { Visit } from "@/lib/db/schema"
 import type { Landmark } from "@/lib/landmarks"
 import { AlertTriangle, Compass, Loader2, LocateFixed, MapPin, Search } from "lucide-react"
 import dynamic from "next/dynamic"
-import { type FormEvent, useCallback, useMemo, useState } from "react"
+import { type FormEvent, useCallback, useMemo, useRef, useState } from "react"
 import { NearbyList } from "./nearby-list"
 import { RecentVisit } from "./recent-visit"
 import { VisitLog } from "./visit-log"
@@ -48,6 +48,13 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [pendingId, setPendingId] = useState<string | null>(null)
   const [who, setWho] = useState("Us")
+  const [approximate, setApproximate] = useState(false)
+  const searchRef = useRef<HTMLInputElement>(null)
+
+  const focusSearch = useCallback(() => {
+    searchRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })
+    searchRef.current?.focus()
+  }, [])
 
   const visitedIds = useMemo(() => new Set(visits.map((v) => v.landmarkId)), [visits])
   const recentVisit = visits[0] ?? null
@@ -82,11 +89,13 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
     }
   }, [])
 
-  // Set the active location and immediately load its landmarks.
+  // Set the active location and immediately load its landmarks. `isApprox`
+  // marks IP-based estimates so we can prompt the user to refine by search.
   const applyLocation = useCallback(
-    (lat: number, lng: number, label: string) => {
+    (lat: number, lng: number, label: string, isApprox = false) => {
       setPosition({ lat, lng })
       setLocationLabel(label)
+      setApproximate(isApprox)
       setGeoStatus("ready")
       setGeoError(null)
       void loadLandmarks(lat, lng, radius)
@@ -103,7 +112,7 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
       if (!res.ok) return false
       const data = await res.json()
       if (typeof data.lat === "number" && typeof data.lng === "number") {
-        applyLocation(data.lat, data.lng, data.label || "Approximate location")
+        applyLocation(data.lat, data.lng, data.label || "Approximate location", true)
         return true
       }
     } catch {
@@ -264,10 +273,11 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
               className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
               aria-hidden
             />
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              enterKeyHint="search"
+  <input
+  ref={searchRef}
+  value={query}
+  onChange={(e) => setQuery(e.target.value)}
+  enterKeyHint="search"
               placeholder="Or search a city or town"
               aria-label="Search for a city or town"
               className="min-h-12 w-full rounded-full border border-border bg-background pr-4 pl-9 text-base text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none"
@@ -296,6 +306,25 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
                 <MapPin className="size-4 shrink-0 text-primary" aria-hidden />
                 {locationLabel}
               </p>
+            ) : null}
+            {approximate ? (
+              <div className="mb-3 flex items-start gap-2 rounded-2xl border border-accent/40 bg-accent/15 p-3 text-sm text-accent-foreground">
+                <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
+                <div>
+                  <p className="font-medium">This is an approximate location.</p>
+                  <p className="mt-0.5 text-muted-foreground">
+                    Not where you are? {" "}
+                    <button
+                      type="button"
+                      onClick={focusSearch}
+                      className="font-semibold text-primary underline underline-offset-2"
+                    >
+                      Search your town
+                    </button>{" "}
+                    to set it exactly.
+                  </p>
+                </div>
+              </div>
             ) : null}
             <div className="mb-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">
               Search radius
