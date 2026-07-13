@@ -250,47 +250,65 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
       <section className="rounded-3xl border border-border bg-card p-5">
         <div className="flex items-center gap-2 text-sm font-semibold text-card-foreground">
           <Compass className="size-5 text-primary" aria-hidden />
-          Find landmarks around you
+          Where are you?
+        </div>
+
+        <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+          Type your city or town to see historic landmarks around it.
+        </p>
+
+        <form onSubmit={searchLocation} className="mt-3 flex flex-col gap-2">
+          <div className="relative">
+            <Search
+              className="pointer-events-none absolute top-1/2 left-3 size-5 -translate-y-1/2 text-muted-foreground"
+              aria-hidden
+            />
+            <input
+              ref={searchRef}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              enterKeyHint="search"
+              placeholder="e.g. Olympia, WA"
+              aria-label="Enter your city or town"
+              className="min-h-12 w-full rounded-full border border-border bg-background pr-4 pl-10 text-base text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none"
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={searching || !query.trim()}
+            className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-full bg-primary px-5 text-base font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-60"
+          >
+            {searching ? (
+              <Loader2 className="size-5 animate-spin" aria-hidden />
+            ) : (
+              <Search className="size-5" aria-hidden />
+            )}
+            Find landmarks here
+          </button>
+        </form>
+
+        <div className="my-3 flex items-center gap-3">
+          <span className="h-px flex-1 bg-border" />
+          <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">or</span>
+          <span className="h-px flex-1 bg-border" />
         </div>
 
         <button
           type="button"
           onClick={locate}
           disabled={geoStatus === "locating"}
-          className="mt-3 inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-full bg-primary px-5 text-base font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-60"
+          className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-full border border-border px-5 text-base font-semibold text-foreground transition-colors hover:bg-muted disabled:opacity-60"
         >
           {geoStatus === "locating" ? (
             <Loader2 className="size-5 animate-spin" aria-hidden />
           ) : (
             <LocateFixed className="size-5" aria-hidden />
           )}
-          {geoStatus === "ready" ? "Update my location" : "Use my current location"}
+          Use my phone&apos;s GPS
         </button>
-
-        <form onSubmit={searchLocation} className="mt-3 flex gap-2">
-          <div className="relative flex-1">
-            <Search
-              className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
-              aria-hidden
-            />
-  <input
-  ref={searchRef}
-  value={query}
-  onChange={(e) => setQuery(e.target.value)}
-  enterKeyHint="search"
-              placeholder="Or search a city or town"
-              aria-label="Search for a city or town"
-              className="min-h-12 w-full rounded-full border border-border bg-background pr-4 pl-9 text-base text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none"
-            />
-          </div>
-          <button
-            type="submit"
-            disabled={searching || !query.trim()}
-            className="inline-flex min-h-12 items-center justify-center rounded-full border border-border px-4 text-sm font-semibold text-foreground transition-colors hover:bg-muted disabled:opacity-50"
-          >
-            {searching ? <Loader2 className="size-4 animate-spin" aria-hidden /> : "Search"}
-          </button>
-        </form>
+        <p className="mt-2 text-center text-xs leading-relaxed text-muted-foreground">
+          GPS finds you automatically on the published app. In this preview it&apos;s only a rough guess, so searching your town is more reliable.
+        </p>
 
         {geoError ? (
           <p className="mt-3 flex items-start gap-2 rounded-xl bg-destructive/10 p-3 text-sm text-destructive">
