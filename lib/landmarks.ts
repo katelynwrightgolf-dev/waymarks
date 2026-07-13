@@ -87,35 +87,147 @@ function trimExtract(extract?: string): string | null {
   return (lastStop > 80 ? cut.slice(0, lastStop + 1) : cut.trimEnd() + "…")
 }
 
+// Great-circle distance in meters between two lat/lng points.
+function haversine(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371000
+  const toRad = (d: number) => (d * Math.PI) / 180
+  const dLat = toRad(lat2 - lat1)
+  const dLng = toRad(lng2 - lng1)
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2
+  return 2 * R * Math.asin(Math.sqrt(a))
+}
+
+// Normalize a place name for de-duplication across data sources.
+function normalizeName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/^the\s+/, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+}
+
+type OverpassElement = {
+  type: "node" | "way" | "relation"
+  id: number
+  lat?: number
+  lon?: number
+  center?: { lat: number; lon: number }
+  tags?: Record<string, string>
+}
+
+// Supplementary source: OpenStreetMap historic sites (memorials, monuments,
+// ruins, historic buildings, markers). These catch many named historic places
+// that don't have their own Wikipedia article, so downtown coverage is far
+// more complete. Best-effort: if Overpass is slow or down, we simply skip it.
+async function fetchOverpassHistoric(
+  lat: number,
+  lng: number,
+  radiusMeters: number,
+): Promise<Landmark[]> {
+  const radius = Math.min(Math.max(Math.round(radiusMeters), 10), 16000)
+  // A bounding-box query is dramatically faster than an `around` radius scan on
+  // Overpass (which times out over large areas). We compute a bbox from the
+  // center + radius, then filter back to the exact circle via haversine below.
+  const dLat = radius / 111320
+  const dLng = radius / (111320 * Math.cos((lat * Math.PI) / 180))
+  const bbox = `${lat - dLat},${lng - dLng},${lat + dLat},${lng + dLng}`
+  const query = `[out:json][timeout:25];nwr[historic][name](${bbox});out center tags 400;`
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 14000)
+  try {
+    const res = await fetch("https://overpass-api.de/api/interpreter", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        // Overpass returns 406 Not Acceptable without an explicit Accept header
+        // and a descriptive User-Agent.
+        Accept: "application/json",
+        "User-Agent": "Waymarks/1.0 (historic landmark tracker)",
+      },
+      body: `data=${encodeURIComponent(query)}`,
+      signal: controller.signal,
+      next: { revalidate: 300 },
+    })
+    if (!res.ok) return []
+    const data = (await res.json()) as { elements?: OverpassElement[] }
+    const elements = data.elements ?? []
+    const out: Landmark[] = []
+    for (const el of elements) {
+      const name = el.tags?.name
+      const plat = el.lat ?? el.center?.lat
+      const plng = el.lon ?? el.center?.lon
+      if (!name || plat == null || plng == null) continue
+      const dist = haversine(lat, lng, plat, plng)
+      // bbox is a square; drop corners that fall outside the requested circle.
+      if (dist > radius) continue
+      const historic = el.tags?.historic
+      // Turn "memorial" / "monument" / "yes" into a friendly category.
+      const category =
+        historic && historic !== "yes"
+          ? `Historic ${historic.replace(/_/g, " ")}`.replace(/\b\w/, (c) => c.toUpperCase())
+          : "Historic site"
+      out.push({
+        id: `osm/${el.type}/${el.id}`,
+        name,
+        category,
+        kind: "landmark",
+        lat: plat,
+        lng: plng,
+        description: el.tags?.description ?? el.tags?.inscription ?? null,
+        wikipedia: el.tags?.wikipedia ?? null,
+        imageUrl: null,
+        distanceMeters: dist,
+      })
+    }
+    return out
+  } catch {
+    return []
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 export async function fetchNearbyLandmarks(
   lat: number,
   lng: number,
   radiusMeters: number,
 ): Promise<Landmark[]> {
-  // Wikipedia's GeoSearch finds notable nearby places (historic buildings,
-  // monuments, landmarks) fast and reliably, and gives us real descriptions
-  // and photos — far quicker than the public Overpass servers.
-  const geo = await wikiFetch({
-    action: "query",
-    list: "geosearch",
-    gscoord: `${lat}|${lng}`,
-    gsradius: String(Math.min(Math.max(radiusMeters, 10), 10000)),
-    // Cast a wider net (100) so surrounding towns aren't crowded out by the
-    // many buildings/monuments that cluster nearest to the search point.
-    gslimit: "100",
-  })
+  // Two sources in parallel:
+  //  1. Wikipedia GeoSearch — notable places with rich descriptions + photos.
+  //  2. OpenStreetMap historic sites — catches memorials, monuments, markers
+  //     and historic buildings that lack a Wikipedia article.
+  const [geo, osmHistoric] = await Promise.all([
+    wikiFetch({
+      action: "query",
+      list: "geosearch",
+      gscoord: `${lat}|${lng}`,
+      gsradius: String(Math.min(Math.max(radiusMeters, 10), 10000)),
+      // Pull a large set (max 500) so dense downtowns aren't truncated to just
+      // the closest block. We fetch heavy details only for the kept subset.
+      gslimit: "500",
+    }).catch(() => null),
+    fetchOverpassHistoric(lat, lng, radiusMeters),
+  ])
 
   const results: GeoSearchResult[] = geo?.query?.geosearch ?? []
-  if (results.length === 0) return []
+
+  // Keep the nearest N Wikipedia results for detail lookup. This is the only
+  // expensive step, so capping it (not the geosearch) keeps us fast while still
+  // covering far more than the old 50-item limit.
+  const DETAIL_CAP = 140
+  const kept = results.slice(0, DETAIL_CAP)
 
   // Fetch descriptions, short descriptions, thumbnails and coordinates for the
-  // found pages. `extracts` allows max 20 pages per request, so batch by 20.
+  // kept pages. `extracts` allows max 20 pages per request, so batch by 20.
   // Wikipedia rate-limits bursts (HTTP 429), so we run only a couple of batches
   // at a time and skip any that fail — partial detail is better than no result.
   const details = new Map<number, PageDetail>()
   const batches: GeoSearchResult[][] = []
-  for (let i = 0; i < results.length; i += 20) {
-    batches.push(results.slice(i, i + 20))
+  for (let i = 0; i < kept.length; i += 20) {
+    batches.push(kept.slice(i, i + 20))
   }
 
   const CONCURRENCY = 2
@@ -143,7 +255,7 @@ export async function fetchNearbyLandmarks(
     }
   }
 
-  const landmarks: Landmark[] = results.map((r) => {
+  const wikiLandmarks: Landmark[] = kept.map((r) => {
     const detail = details.get(r.pageid)
     const shortDesc = detail?.description
     return {
@@ -162,14 +274,26 @@ export async function fetchNearbyLandmarks(
     }
   })
 
-  // Already sorted by distance from the API, but be explicit.
-  landmarks.sort((a, b) => (a.distanceMeters ?? 0) - (b.distanceMeters ?? 0))
+  // Merge in OSM historic sites, skipping any that duplicate a Wikipedia entry
+  // (same normalized name, or already linked to a Wikipedia article).
+  const seen = new Set(wikiLandmarks.map((l) => normalizeName(l.name)))
+  const extraHistoric = osmHistoric.filter((l) => {
+    const key = normalizeName(l.name)
+    if (seen.has(key) || l.wikipedia) return false
+    seen.add(key)
+    return true
+  })
 
-  // Keep every town we found (they're the whole point of the Towns filter and
-  // are relatively rare) plus the nearest individual landmarks, so towns never
-  // get dropped when we trim the wider result set back down.
-  const towns = landmarks.filter((l) => l.kind === "town")
-  const nearestLandmarks = landmarks.filter((l) => l.kind === "landmark").slice(0, 50)
+  const all = [...wikiLandmarks, ...extraHistoric]
+
+  // Keep every town (relatively rare, and the whole point of the Towns filter)
+  // plus the nearest individual landmarks, so towns are never trimmed away.
+  const towns = all.filter((l) => l.kind === "town")
+  const nearestLandmarks = all
+    .filter((l) => l.kind === "landmark")
+    .sort((a, b) => (a.distanceMeters ?? 0) - (b.distanceMeters ?? 0))
+    .slice(0, 150)
+
   return [...towns, ...nearestLandmarks].sort(
     (a, b) => (a.distanceMeters ?? 0) - (b.distanceMeters ?? 0),
   )

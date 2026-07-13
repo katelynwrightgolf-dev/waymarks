@@ -36,7 +36,7 @@ export function RecentVisit({ visit }: { visit: Visit }) {
       <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm opacity-90">
         {visit.category ? <span>{visit.category}</span> : null}
         <span aria-hidden>·</span>
-        <span>{timeAgo(visit.visitedAt)}</span>
+        <span suppressHydrationWarning>{timeAgo(visit.visitedAt)}</span>
       </div>
 
       {visit.note ? (
@@ -45,7 +45,7 @@ export function RecentVisit({ visit }: { visit: Visit }) {
         </p>
       ) : null}
 
-      <div className="mt-3 text-sm opacity-90">
+      <div className="mt-3 text-sm opacity-90" suppressHydrationWarning>
         Logged by {visit.visitedBy} · {fullDate(visit.visitedAt)}
       </div>
 

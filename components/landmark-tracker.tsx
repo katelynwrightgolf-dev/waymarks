@@ -3,7 +3,7 @@
 import { checkIn, deleteVisit, getVisits, updateNote } from "@/app/actions/visits"
 import type { Visit } from "@/lib/db/schema"
 import type { Landmark } from "@/lib/landmarks"
-import { AlertTriangle, Compass, Loader2, LocateFixed, MapPin, Search } from "lucide-react"
+import { AlertTriangle, Compass, Loader2, LocateFixed, MapPin, Search, X } from "lucide-react"
 import dynamic from "next/dynamic"
 import { type FormEvent, useCallback, useMemo, useRef, useState } from "react"
 import { NearbyList } from "./nearby-list"
@@ -45,6 +45,7 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
   const [landmarkError, setLandmarkError] = useState<string | null>(null)
   const [tab, setTab] = useState<"nearby" | "visited">("nearby")
   const [kindFilter, setKindFilter] = useState<"all" | "landmark" | "town">("all")
+  const [listQuery, setListQuery] = useState("")
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [pendingId, setPendingId] = useState<string | null>(null)
   const [who, setWho] = useState("Us")
@@ -62,10 +63,15 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
   // Split results into towns vs. individual landmarks so we can filter/count.
   const townCount = useMemo(() => landmarks.filter((l) => l.kind === "town").length, [landmarks])
   const landmarkCount = landmarks.length - townCount
-  const filteredLandmarks = useMemo(
-    () => (kindFilter === "all" ? landmarks : landmarks.filter((l) => l.kind === kindFilter)),
-    [landmarks, kindFilter],
-  )
+  const filteredLandmarks = useMemo(() => {
+    const byKind = kindFilter === "all" ? landmarks : landmarks.filter((l) => l.kind === kindFilter)
+    const q = listQuery.trim().toLowerCase()
+    if (!q) return byKind
+    // Free-text search across name, category and description of found places.
+    return byKind.filter((l) =>
+      [l.name, l.category, l.description].some((field) => field?.toLowerCase().includes(q)),
+    )
+  }, [landmarks, kindFilter, listQuery])
 
   // Stable [lat, lng] reference so the map only recenters when we actually move.
   const mapCenter = useMemo<[number, number] | null>(
@@ -484,6 +490,30 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
           </p>
         ) : (
           <div className="flex flex-col gap-3">
+            <div className="relative">
+              <Search
+                className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
+                aria-hidden
+              />
+              <input
+                type="text"
+                value={listQuery}
+                onChange={(e) => setListQuery(e.target.value)}
+                placeholder="Search these landmarks by name"
+                aria-label="Search found landmarks"
+                className="min-h-11 w-full rounded-full border border-border bg-background pr-10 pl-9 text-base text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none"
+              />
+              {listQuery ? (
+                <button
+                  type="button"
+                  onClick={() => setListQuery("")}
+                  aria-label="Clear search"
+                  className="absolute top-1/2 right-2 inline-flex size-8 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground hover:bg-muted"
+                >
+                  <X className="size-4" aria-hidden />
+                </button>
+              ) : null}
+            </div>
             <div className="flex gap-2">
               {(
                 [
@@ -506,14 +536,20 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
                 </button>
               ))}
             </div>
-            <NearbyList
-              landmarks={filteredLandmarks}
-              visitedIds={visitedIds}
-              selectedId={selectedId}
-              pendingId={pendingId}
-              onSelect={setSelectedId}
-              onCheckIn={handleCheckIn}
-            />
+            {listQuery.trim() && filteredLandmarks.length === 0 ? (
+              <p className="rounded-2xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+                No landmarks match &ldquo;{listQuery.trim()}&rdquo;. Try a different name.
+              </p>
+            ) : (
+              <NearbyList
+                landmarks={filteredLandmarks}
+                visitedIds={visitedIds}
+                selectedId={selectedId}
+                pendingId={pendingId}
+                onSelect={setSelectedId}
+                onCheckIn={handleCheckIn}
+              />
+            )}
           </div>
         )
       ) : (
