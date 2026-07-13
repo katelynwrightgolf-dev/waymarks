@@ -103,21 +103,44 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
     [loadLandmarks, radius],
   )
 
-  // Approximate location via our SERVER route. Doing this server-side avoids
-  // the cross-origin iframe restrictions that block browser geolocation and
-  // client-side IP lookups inside the preview, so auto-detect actually works.
+  // Approximate location from the BROWSER's IP. This must run client-side: a
+  // fetch from the user's device uses THEIR IP (their real city), whereas a
+  // server call would only ever see our datacenter's IP. Unlike the GPS API,
+  // a plain fetch is not blocked by the preview iframe, so this works both in
+  // the preview and on the published app. We try two providers for resilience.
   const locateByIp = useCallback(async () => {
+    const withTimeout = (url: string) => {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 6000)
+      return fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timer))
+    }
+
+    // Provider 1: ipwho.is
     try {
-      const res = await fetch("/api/my-location")
-      if (!res.ok) return false
-      const data = await res.json()
-      if (typeof data.lat === "number" && typeof data.lng === "number") {
-        applyLocation(data.lat, data.lng, data.label || "Approximate location", true)
+      const data = await withTimeout("https://ipwho.is/").then((r) => r.json())
+      if (data && data.success !== false && typeof data.latitude === "number") {
+        const place = [data.city, data.region].filter(Boolean).join(", ")
+        applyLocation(data.latitude, data.longitude, place || "Approximate location", true)
         return true
       }
     } catch {
-      /* fall through to the manual search */
+      /* try the next provider */
     }
+
+    // Provider 2: geojs.io
+    try {
+      const data = await withTimeout("https://get.geojs.io/v1/ip/geo.json").then((r) => r.json())
+      const lat = Number.parseFloat(data?.latitude)
+      const lng = Number.parseFloat(data?.longitude)
+      if (Number.isFinite(lat) && Number.isFinite(lng)) {
+        const place = [data.city, data.region].filter(Boolean).join(", ")
+        applyLocation(lat, lng, place || "Approximate location", true)
+        return true
+      }
+    } catch {
+      /* fall through to manual search */
+    }
+
     return false
   }, [applyLocation])
 
@@ -304,10 +327,10 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
           ) : (
             <LocateFixed className="size-5" aria-hidden />
           )}
-          Use my phone&apos;s GPS
+          {geoStatus === "locating" ? "Finding you…" : "Use my current location"}
         </button>
         <p className="mt-2 text-center text-xs leading-relaxed text-muted-foreground">
-          GPS finds you automatically on the published app. In this preview it&apos;s only a rough guess, so searching your town is more reliable.
+          We&apos;ll detect your area automatically. It may be approximate — search your town above to pinpoint it.
         </p>
 
         {geoError ? (
