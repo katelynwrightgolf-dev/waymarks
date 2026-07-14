@@ -54,13 +54,7 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [pendingId, setPendingId] = useState<string | null>(null)
   const [who, setWho] = useState("Us")
-  const [approximate, setApproximate] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
-
-  const focusSearch = useCallback(() => {
-    searchRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })
-    searchRef.current?.focus()
-  }, [])
 
   const visitedIds = useMemo(() => new Set(visits.map((v) => v.landmarkId)), [visits])
   const recentVisit = visits[0] ?? null
@@ -123,13 +117,12 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
     }
   }, [])
 
-  // Set the active location and immediately load its landmarks. `isApprox`
-  // marks IP-based estimates so we can prompt the user to refine by search.
+  // Set the active location (from GPS or a manual search) and immediately load
+  // its landmarks.
   const applyLocation = useCallback(
-    (lat: number, lng: number, label: string, isApprox = false) => {
+    (lat: number, lng: number, label: string) => {
       setPosition({ lat, lng })
       setLocationLabel(label)
-      setApproximate(isApprox)
       setGeoStatus("ready")
       setGeoError(null)
       void loadLandmarks(lat, lng, radius)
@@ -137,96 +130,33 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
     [loadLandmarks, radius],
   )
 
-  // Fetch (but do NOT apply) an approximate location from the BROWSER's IP.
-  // Returns the estimate or null. This must run client-side: a fetch from the
-  // user's device uses THEIR IP, whereas a server call would only see our
-  // datacenter's IP. IP geolocation is coarse and, on cellular networks, can be
-  // off by hundreds of miles (it resolves to a carrier hub), so it's only ever
-  // used as a fallback when GPS is unavailable — never in a race against GPS.
-  const locateByIp = useCallback(async (): Promise<GeoResult | null> => {
-    const withTimeout = (url: string) => {
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), 6000)
-      return fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timer))
-    }
-
-    // Provider 1: ipwho.is
-    try {
-      const data = await withTimeout("https://ipwho.is/").then((r) => r.json())
-      if (data && data.success !== false && typeof data.latitude === "number") {
-        const place = [data.city, data.region].filter(Boolean).join(", ")
-        return { lat: data.latitude, lng: data.longitude, label: place || "Approximate location" }
-      }
-    } catch {
-      /* try the next provider */
-    }
-
-    // Provider 2: geojs.io
-    try {
-      const data = await withTimeout("https://get.geojs.io/v1/ip/geo.json").then((r) => r.json())
-      const lat = Number.parseFloat(data?.latitude)
-      const lng = Number.parseFloat(data?.longitude)
-      if (Number.isFinite(lat) && Number.isFinite(lng)) {
-        const place = [data.city, data.region].filter(Boolean).join(", ")
-        return { lat, lng, label: place || "Approximate location" }
-      }
-    } catch {
-      /* fall through to manual search */
-    }
-
-    return null
-  }, [])
-
   const locate = useCallback(() => {
     setGeoStatus("locating")
     setGeoError(null)
 
-    // GPS is the ONLY accurate source, so we simply wait for it. We do NOT race
-    // it against the IP estimate or reveal that estimate on a timer — IP lookup
-    // is coarse and on cellular often resolves to a carrier hub hundreds of
-    // miles away (e.g. showing Atlanta when you're in Washington). Surfacing it
-    // early gives a confidently-wrong location, so IP is used ONLY as a fallback
-    // when GPS genuinely fails (denied, unavailable, or timed out).
-    let settled = false
-
-    // Warm up the IP lookup in the background so that IF we need the fallback,
-    // it resolves instantly. Its result is never applied unless GPS fails.
-    const ipPromise = locateByIp()
-
-    const applyIpFallback = async () => {
-      if (settled) return
-      const ip = await ipPromise
-      if (settled) return
-      settled = true
-      if (ip) {
-        applyLocation(ip.lat, ip.lng, ip.label, true)
-      } else {
-        setGeoStatus("error")
-        setGeoError("Couldn't detect your location automatically. Search for where you are below.")
-      }
-    }
-
+    // Device GPS is the ONLY location source. We deliberately do not use
+    // IP-based geolocation as a fallback: it's inaccurate and, behind a VPN or
+    // on cellular, resolves to a routing hub far from where you actually are
+    // (which is what put a Washington user in Atlanta). If GPS is unavailable
+    // or denied, we ask the user to type their location instead — a search is
+    // always correct, an IP guess often isn't.
     if (!("geolocation" in navigator)) {
-      void applyIpFallback()
+      setGeoStatus("error")
+      setGeoError("Your browser can't detect location. Search for where you are below.")
       return
     }
 
     navigator.geolocation.getCurrentPosition(
-      // Accurate device fix — the primary, authoritative result.
-      (pos) => {
-        if (settled) return
-        settled = true
-        applyLocation(pos.coords.latitude, pos.coords.longitude, "Your current location")
-      },
-      // GPS denied, unavailable, or timed out (this also covers the blocked
-      // preview iframe) → fall back to the approximate IP estimate, then to
-      // manual search if even that fails.
+      (pos) => applyLocation(pos.coords.latitude, pos.coords.longitude, "Your current location"),
+      // GPS denied, unavailable, or timed out (also covers the blocked preview
+      // iframe) → guide the user to the manual search box.
       () => {
-        void applyIpFallback()
+        setGeoStatus("error")
+        setGeoError("Couldn't access your location. Search for where you are below instead.")
       },
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 },
     )
-  }, [applyLocation, locateByIp])
+  }, [applyLocation])
 
   // Manual location: geocode a place name (city, town, landmark, or address)
   // through our server route so the app works even when device GPS is blocked
@@ -396,7 +326,7 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
           {geoStatus === "locating" ? "Finding you…" : "Use my current location"}
         </button>
         <p className="mt-2 text-center text-xs leading-relaxed text-muted-foreground">
-          We&apos;ll detect your area automatically. It may be approximate — search your town above to pinpoint it.
+          Uses your device location. If it&apos;s blocked, search your town above instead.
         </p>
 
         {geoError ? (
@@ -414,25 +344,7 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
                 {locationLabel}
               </p>
             ) : null}
-            {approximate ? (
-              <div className="mb-3 flex items-start gap-2 rounded-2xl border border-accent/40 bg-accent/15 p-3 text-sm text-accent-foreground">
-                <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
-                <div>
-                  <p className="font-medium">This is an approximate location.</p>
-                  <p className="mt-0.5 text-muted-foreground">
-                    Not where you are? {" "}
-                    <button
-                      type="button"
-                      onClick={focusSearch}
-                      className="font-semibold text-primary underline underline-offset-2"
-                    >
-                      Search your town
-                    </button>{" "}
-                    to set it exactly.
-                  </p>
-                </div>
-              </div>
-            ) : null}
+
             <div className="mb-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">
               Search radius
             </div>
