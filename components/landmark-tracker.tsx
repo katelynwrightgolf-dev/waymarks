@@ -181,24 +181,26 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
     setGeoStatus("locating")
     setGeoError(null)
 
-    // GPS is authoritative — it's accurate to meters. The IP estimate is coarse
-    // (and often wrong on cellular), so it is ONLY used to fill in while we wait
-    // for GPS, or if GPS is unavailable/denied. GPS always overrides IP.
-    let gpsApplied = false
-    let ipApplied = false
+    // GPS is the ONLY accurate source, so we simply wait for it. We do NOT race
+    // it against the IP estimate or reveal that estimate on a timer — IP lookup
+    // is coarse and on cellular often resolves to a carrier hub hundreds of
+    // miles away (e.g. showing Atlanta when you're in Washington). Surfacing it
+    // early gives a confidently-wrong location, so IP is used ONLY as a fallback
+    // when GPS genuinely fails (denied, unavailable, or timed out).
+    let settled = false
 
-    // Start the IP lookup in the background, but hold the result — don't show it
-    // yet. This keeps the accurate GPS fix as the primary source.
+    // Warm up the IP lookup in the background so that IF we need the fallback,
+    // it resolves instantly. Its result is never applied unless GPS fails.
     const ipPromise = locateByIp()
 
     const applyIpFallback = async () => {
-      if (gpsApplied || ipApplied) return
+      if (settled) return
       const ip = await ipPromise
-      if (gpsApplied || ipApplied) return // GPS may have arrived while awaiting
+      if (settled) return
+      settled = true
       if (ip) {
-        ipApplied = true
         applyLocation(ip.lat, ip.lng, ip.label, true)
-      } else if (!gpsApplied) {
+      } else {
         setGeoStatus("error")
         setGeoError("Couldn't detect your location automatically. Search for where you are below.")
       }
@@ -209,27 +211,20 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
       return
     }
 
-    // Give GPS a head start. If it hasn't resolved within the grace window
-    // (e.g. slow fix, or the permission prompt is still open), show the IP
-    // estimate so the user isn't stuck on a spinner — GPS will correct it the
-    // moment it arrives. In the v0 preview iframe GPS is usually blocked, so
-    // this is what surfaces a location there.
-    const graceTimer = setTimeout(() => {
-      void applyIpFallback()
-    }, 4000)
-
     navigator.geolocation.getCurrentPosition(
+      // Accurate device fix — the primary, authoritative result.
       (pos) => {
-        clearTimeout(graceTimer)
-        gpsApplied = true
+        if (settled) return
+        settled = true
         applyLocation(pos.coords.latitude, pos.coords.longitude, "Your current location")
       },
-      async () => {
-        // GPS blocked/failed → fall back to the IP estimate (or guide to search).
-        clearTimeout(graceTimer)
-        await applyIpFallback()
+      // GPS denied, unavailable, or timed out (this also covers the blocked
+      // preview iframe) → fall back to the approximate IP estimate, then to
+      // manual search if even that fails.
+      () => {
+        void applyIpFallback()
       },
-      { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 },
     )
   }, [applyLocation, locateByIp])
 
