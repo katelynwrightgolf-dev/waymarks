@@ -18,3 +18,14 @@ export const visits = pgTable("visits", {
 
 export type Visit = typeof visits.$inferSelect
 export type NewVisit = typeof visits.$inferInsert
+
+// Cache of AI-generated "interesting facts" per landmark, so we only ever pay
+// to generate them once. Keyed by the stable landmark id (e.g. "wikipedia/123"
+// or "osm/node/456"). Facts are stored as a JSON-encoded string array.
+export const landmarkFacts = pgTable("landmark_facts", {
+  landmarkId: text("landmark_id").primaryKey(),
+  facts: text("facts").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+})
+
+export type LandmarkFacts = typeof landmarkFacts.$inferSelect

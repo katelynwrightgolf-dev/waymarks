@@ -43,6 +43,7 @@ export function NearbyList({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            landmarkId: lm.id,
             name: lm.name,
             category: lm.category,
             kind: lm.kind,

@@ -1,9 +1,11 @@
 import { generateText } from "ai"
 import { anthropic } from "@ai-sdk/anthropic"
+import { getCachedFacts, saveFacts } from "@/lib/facts-store"
 
 export const maxDuration = 30
 
 type FactsRequest = {
+  landmarkId?: string
   name?: string
   category?: string | null
   kind?: "town" | "landmark"
@@ -22,6 +24,21 @@ export async function POST(request: Request) {
   const name = body.name?.trim()
   if (!name) {
     return Response.json({ error: "A landmark name is required." }, { status: 400 })
+  }
+
+  const landmarkId = body.landmarkId?.trim()
+
+  // Return persisted facts if we've already generated them for this landmark,
+  // so we never pay to generate the same facts twice.
+  if (landmarkId) {
+    try {
+      const cached = await getCachedFacts(landmarkId)
+      if (cached && cached.length > 0) {
+        return Response.json({ facts: cached, cached: true })
+      }
+    } catch (error) {
+      console.log("[v0] facts cache read error:", error instanceof Error ? error.message : error)
+    }
   }
 
   const kind = body.kind === "town" ? "town or community" : "historic landmark"
@@ -60,11 +77,25 @@ export async function POST(request: Request) {
 
     const facts = text
       .split("\n")
+      .map((line) => line.trim())
+      // Drop markdown headings (e.g. "# Roseland Theater") the model sometimes
+      // adds as a title — those aren't facts.
+      .filter((line) => line.length > 0 && !line.startsWith("#"))
+      // Strip any leading bullet/number markers.
       .map((line) => line.replace(/^\s*[-*\d.)]+\s*/, "").trim())
       .filter((line) => line.length > 0)
 
     if (facts.length === 0) {
       return Response.json({ error: "No facts were generated. Please try again." }, { status: 502 })
+    }
+
+    // Persist so future requests for this landmark are free and instant.
+    if (landmarkId) {
+      try {
+        await saveFacts(landmarkId, facts)
+      } catch (error) {
+        console.log("[v0] facts cache write error:", error instanceof Error ? error.message : error)
+      }
     }
 
     return Response.json({ facts })
