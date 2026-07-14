@@ -286,10 +286,17 @@ export async function fetchNearbyLandmarks(
 
   const all = [...wikiLandmarks, ...extraHistoric]
 
+  // Strictly enforce the requested radius. Wikipedia's geosearch radius is
+  // imprecise (it can return places slightly beyond gsradius), so we hard-filter
+  // here — this guarantees a smaller radius reliably narrows to only what's
+  // truly within range. A small 5% tolerance absorbs coordinate rounding.
+  const maxDist = radiusMeters * 1.05
+  const within = all.filter((l) => (l.distanceMeters ?? 0) <= maxDist)
+
   // Keep every town (relatively rare, and the whole point of the Towns filter)
   // plus the nearest individual landmarks, so towns are never trimmed away.
-  const towns = all.filter((l) => l.kind === "town")
-  const nearestLandmarks = all
+  const towns = within.filter((l) => l.kind === "town")
+  const nearestLandmarks = within
     .filter((l) => l.kind === "landmark")
     .sort((a, b) => (a.distanceMeters ?? 0) - (b.distanceMeters ?? 0))
     .slice(0, 150)

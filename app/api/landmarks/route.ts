@@ -5,7 +5,7 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url)
   const lat = Number.parseFloat(searchParams.get("lat") ?? "")
   const lng = Number.parseFloat(searchParams.get("lng") ?? "")
-  const radius = Math.min(Math.max(Number.parseInt(searchParams.get("radius") ?? "3000", 10), 500), 20000)
+  const radius = Math.min(Math.max(Number.parseInt(searchParams.get("radius") ?? "3000", 10), 100), 20000)
 
   if (Number.isNaN(lat) || Number.isNaN(lng)) {
     return NextResponse.json({ error: "Missing or invalid lat/lng" }, { status: 400 })

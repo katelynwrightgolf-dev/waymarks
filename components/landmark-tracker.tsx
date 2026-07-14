@@ -20,6 +20,8 @@ const MapView = dynamic(() => import("./map-view"), {
 })
 
 const RADIUS_OPTIONS = [
+  { label: "¼ mi", value: 400 },
+  { label: "½ mi", value: 800 },
   { label: "1 mi", value: 1600 },
   { label: "3 mi", value: 4800 },
   { label: "6 mi", value: 9700 },
@@ -39,7 +41,7 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
   const [locationLabel, setLocationLabel] = useState<string | null>(null)
   const [query, setQuery] = useState("")
   const [searching, setSearching] = useState(false)
-  const [radius, setRadius] = useState(4800)
+  const [radius, setRadius] = useState(800)
   const [landmarks, setLandmarks] = useState<Landmark[]>([])
   const [loadingLandmarks, setLoadingLandmarks] = useState(false)
   const [landmarkError, setLandmarkError] = useState<string | null>(null)
@@ -376,13 +378,13 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
             <div className="mb-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">
               Search radius
             </div>
-            <div className="flex gap-2">
+            <div className="flex gap-1.5">
               {RADIUS_OPTIONS.map((opt) => (
                 <button
                   key={opt.value}
                   type="button"
                   onClick={() => changeRadius(opt.value)}
-                  className={`min-h-10 flex-1 rounded-full border px-3 text-sm font-semibold transition-colors ${
+                  className={`min-h-10 flex-1 rounded-full border px-1 text-sm font-semibold transition-colors ${
                     radius === opt.value
                       ? "border-primary bg-primary/10 text-primary"
                       : "border-border text-muted-foreground hover:bg-muted"
