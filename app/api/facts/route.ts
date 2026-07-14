@@ -34,8 +34,9 @@ export async function POST(request: Request) {
 
   try {
     const { text } = await generateText({
-      // Fast, low-cost model available zero-config through the Vercel AI Gateway.
-      model: "openai/gpt-5-mini",
+      // Claude, via the Vercel AI Gateway (zero-config, no separate Anthropic
+      // account needed). Haiku is fast and low-cost — a good fit for short facts.
+      model: "anthropic/claude-haiku-4.5",
       system:
         "You are a knowledgeable local historian and tour guide. " +
         "Given a place, share genuinely interesting, specific, and lesser-known facts about it: " +
