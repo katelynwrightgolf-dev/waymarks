@@ -306,6 +306,84 @@ export async function fetchNearbyLandmarks(
   )
 }
 
+// Search Wikipedia for a place BY NAME (not by location). This powers the
+// "I'm walking past a specific landmark" flow: the user types a name and we
+// find matching places anywhere, so they can log something even if it wasn't
+// in the nearby list. If `near` is provided we compute + sort by distance.
+export async function searchLandmarksByName(
+  query: string,
+  near?: { lat: number; lng: number },
+): Promise<Landmark[]> {
+  const q = query.trim()
+  if (!q) return []
+
+  // Full-text search for matching articles. We bias toward geolocated places
+  // by requesting coordinates in the same generator query.
+  const data = await wikiFetch({
+    action: "query",
+    generator: "search",
+    gsrsearch: q,
+    gsrlimit: "20",
+    gsrnamespace: "0",
+    prop: "coordinates|extracts|pageimages|description",
+    exintro: "1",
+    explaintext: "1",
+    piprop: "thumbnail",
+    pithumbsize: "480",
+    // "max" so EVERY result gets its coordinates (colimit caps total coords
+    // across the whole query, not per page — a low value silently drops places).
+    colimit: "max",
+  }).catch(() => null)
+
+  const pages: Record<string, PageDetail & { index?: number }> = data?.query?.pages ?? {}
+  const list = Object.values(pages)
+
+  // Score how well a title matches the typed name so the actual landmark ranks
+  // above nearby-but-unrelated places (e.g. searching "Pioneer Courthouse"
+  // shouldn't surface "Portland, Oregon" just because it's closer).
+  const nq = q.toLowerCase()
+  const nameScore = (title: string): number => {
+    const t = title.toLowerCase()
+    if (t === nq) return 3
+    if (t.startsWith(nq)) return 2
+    if (t.includes(nq)) return 1
+    return 0
+  }
+
+  const results: Array<Landmark & { _index: number; _score: number }> = []
+  for (const page of list) {
+    const coord = page.coordinates?.[0]
+    // Only keep pages that are actual places (have coordinates on a map).
+    if (!coord) continue
+    const shortDesc = page.description
+    results.push({
+      id: `wikipedia/${page.pageid}`,
+      name: page.title,
+      category: shortDesc ? shortDesc.replace(/\b\w/, (c) => c.toUpperCase()) : "Landmark",
+      kind: classifyKind(shortDesc),
+      lat: coord.lat,
+      lng: coord.lon,
+      description: trimExtract(page.extract),
+      wikipedia: `en:${page.title}`,
+      imageUrl: page.thumbnail?.source ?? null,
+      distanceMeters: near ? haversine(near.lat, near.lng, coord.lat, coord.lon) : undefined,
+      _index: page.index ?? 0,
+      _score: nameScore(page.title),
+    })
+  }
+
+  // Rank by name-match quality first. Within the same quality, prefer nearer
+  // places (helps disambiguate when you're standing next to it), falling back
+  // to Wikipedia's own relevance order when we have no location.
+  results.sort((a, b) => {
+    if (a._score !== b._score) return b._score - a._score
+    if (near) return (a.distanceMeters ?? Infinity) - (b.distanceMeters ?? Infinity)
+    return a._index - b._index
+  })
+
+  return results.map(({ _index, _score, ...rest }) => rest)
+}
+
 export function formatDistance(meters?: number): string {
   if (meters == null) return ""
   const feet = meters * 3.28084

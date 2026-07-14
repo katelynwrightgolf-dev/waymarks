@@ -48,6 +48,9 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
   const [tab, setTab] = useState<"nearby" | "visited">("nearby")
   const [kindFilter, setKindFilter] = useState<"all" | "landmark" | "town">("all")
   const [listQuery, setListQuery] = useState("")
+  const [nameResults, setNameResults] = useState<Landmark[]>([])
+  const [nameSearching, setNameSearching] = useState(false)
+  const [nameSearchedFor, setNameSearchedFor] = useState("")
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [pendingId, setPendingId] = useState<string | null>(null)
   const [who, setWho] = useState("Us")
@@ -236,6 +239,35 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
     },
     [position, loadLandmarks],
   )
+
+  // Search Wikipedia by NAME for a specific landmark (anywhere), so you can log
+  // a place you're walking past even if it wasn't in the nearby list.
+  const searchByName = useCallback(async () => {
+    const q = listQuery.trim()
+    if (!q) return
+    setNameSearching(true)
+    setNameSearchedFor(q)
+    try {
+      const params = new URLSearchParams({ q })
+      if (position) {
+        params.set("lat", String(position.lat))
+        params.set("lng", String(position.lng))
+      }
+      const res = await fetch(`/api/landmark-search?${params.toString()}`)
+      const data = await res.json()
+      setNameResults((data.landmarks as Landmark[]) ?? [])
+    } catch {
+      setNameResults([])
+    } finally {
+      setNameSearching(false)
+    }
+  }, [listQuery, position])
+
+  const clearNameSearch = useCallback(() => {
+    setListQuery("")
+    setNameResults([])
+    setNameSearchedFor("")
+  }, [])
 
   const handleCheckIn = useCallback(
     async (landmark: Landmark) => {
@@ -492,7 +524,13 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
           </p>
         ) : (
           <div className="flex flex-col gap-3">
-            <div className="relative">
+            <form
+              onSubmit={(e) => {
+                e.preventDefault()
+                void searchByName()
+              }}
+              className="relative"
+            >
               <Search
                 className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
                 aria-hidden
@@ -501,21 +539,22 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
                 type="text"
                 value={listQuery}
                 onChange={(e) => setListQuery(e.target.value)}
-                placeholder="Search these landmarks by name"
-                aria-label="Search found landmarks"
+                enterKeyHint="search"
+                placeholder="Search a landmark by name"
+                aria-label="Search landmarks by name"
                 className="min-h-11 w-full rounded-full border border-border bg-background pr-10 pl-9 text-base text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none"
               />
               {listQuery ? (
                 <button
                   type="button"
-                  onClick={() => setListQuery("")}
+                  onClick={clearNameSearch}
                   aria-label="Clear search"
                   className="absolute top-1/2 right-2 inline-flex size-8 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground hover:bg-muted"
                 >
                   <X className="size-4" aria-hidden />
                 </button>
               ) : null}
-            </div>
+            </form>
             <div className="flex gap-2">
               {(
                 [
@@ -538,9 +577,18 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
                 </button>
               ))}
             </div>
-            {listQuery.trim() && filteredLandmarks.length === 0 ? (
+            {filteredLandmarks.length > 0 ? (
+              <NearbyList
+                landmarks={filteredLandmarks}
+                visitedIds={visitedIds}
+                selectedId={selectedId}
+                pendingId={pendingId}
+                onSelect={setSelectedId}
+                onCheckIn={handleCheckIn}
+              />
+            ) : listQuery.trim() ? (
               <p className="rounded-2xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
-                No landmarks match &ldquo;{listQuery.trim()}&rdquo;. Try a different name.
+                Nothing nearby matches &ldquo;{listQuery.trim()}&rdquo;.
               </p>
             ) : (
               <NearbyList
@@ -552,6 +600,50 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
                 onCheckIn={handleCheckIn}
               />
             )}
+
+            {/* Walking past something not in the list? Search everywhere by name. */}
+            {listQuery.trim() ? (
+              <div className="flex flex-col gap-3 rounded-2xl border border-border bg-muted/40 p-4">
+                <p className="text-sm leading-relaxed text-muted-foreground">
+                  Walking past a specific landmark that isn&apos;t listed? Search for it by name and log it directly.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => void searchByName()}
+                  disabled={nameSearching}
+                  className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-primary px-4 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-60"
+                >
+                  {nameSearching ? (
+                    <Loader2 className="size-4 animate-spin" aria-hidden />
+                  ) : (
+                    <Search className="size-4" aria-hidden />
+                  )}
+                  Search everywhere for &ldquo;{listQuery.trim()}&rdquo;
+                </button>
+
+                {!nameSearching && nameSearchedFor ? (
+                  nameResults.length > 0 ? (
+                    <div className="flex flex-col gap-3">
+                      <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+                        Results for &ldquo;{nameSearchedFor}&rdquo;
+                      </p>
+                      <NearbyList
+                        landmarks={nameResults}
+                        visitedIds={visitedIds}
+                        selectedId={selectedId}
+                        pendingId={pendingId}
+                        onSelect={setSelectedId}
+                        onCheckIn={handleCheckIn}
+                      />
+                    </div>
+                  ) : (
+                    <p className="text-center text-sm text-muted-foreground">
+                      No landmark named &ldquo;{nameSearchedFor}&rdquo; found. Try a different spelling.
+                    </p>
+                  )
+                ) : null}
+              </div>
+            ) : null}
           </div>
         )
       ) : (
