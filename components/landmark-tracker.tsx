@@ -583,9 +583,10 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
                 visitedIds={visitedIds}
                 selectedId={selectedId}
                 pendingId={pendingId}
-                onSelect={setSelectedId}
-                onCheckIn={handleCheckIn}
-              />
+  onSelect={setSelectedId}
+  onCheckIn={handleCheckIn}
+  locationLabel={locationLabel}
+  />
             ) : listQuery.trim() ? (
               <p className="rounded-2xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
                 Nothing nearby matches &ldquo;{listQuery.trim()}&rdquo;.
@@ -596,9 +597,10 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
                 visitedIds={visitedIds}
                 selectedId={selectedId}
                 pendingId={pendingId}
-                onSelect={setSelectedId}
-                onCheckIn={handleCheckIn}
-              />
+  onSelect={setSelectedId}
+  onCheckIn={handleCheckIn}
+  locationLabel={locationLabel}
+  />
             )}
 
             {/* Walking past something not in the list? Search everywhere by name. */}

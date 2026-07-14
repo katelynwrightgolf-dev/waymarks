@@ -1,7 +1,8 @@
 "use client"
 
 import { formatDistance, wikipediaUrl, type Landmark } from "@/lib/landmarks"
-import { Check, CheckCircle2, ExternalLink, Loader2, MapPin } from "lucide-react"
+import { Check, CheckCircle2, ExternalLink, Loader2, MapPin, Sparkles } from "lucide-react"
+import { useCallback, useState } from "react"
 
 type NearbyListProps = {
   landmarks: Landmark[]
@@ -10,6 +11,13 @@ type NearbyListProps = {
   pendingId: string | null
   onSelect: (id: string) => void
   onCheckIn: (landmark: Landmark) => void
+  locationLabel?: string | null
+}
+
+type FactsState = {
+  loading: boolean
+  facts: string[] | null
+  error: string | null
 }
 
 export function NearbyList({
@@ -19,7 +27,51 @@ export function NearbyList({
   pendingId,
   onSelect,
   onCheckIn,
+  locationLabel,
 }: NearbyListProps) {
+  // Track AI-generated facts per landmark id so each card manages its own state.
+  const [factsById, setFactsById] = useState<Record<string, FactsState>>({})
+
+  const loadFacts = useCallback(
+    async (lm: Landmark) => {
+      setFactsById((prev) => ({
+        ...prev,
+        [lm.id]: { loading: true, facts: null, error: null },
+      }))
+      try {
+        const res = await fetch("/api/facts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: lm.name,
+            category: lm.category,
+            kind: lm.kind,
+            description: lm.description,
+            locationLabel,
+          }),
+        })
+        const data = await res.json()
+        if (!res.ok || !Array.isArray(data.facts)) {
+          throw new Error(data.error || "Failed to load facts.")
+        }
+        setFactsById((prev) => ({
+          ...prev,
+          [lm.id]: { loading: false, facts: data.facts as string[], error: null },
+        }))
+      } catch (err) {
+        setFactsById((prev) => ({
+          ...prev,
+          [lm.id]: {
+            loading: false,
+            facts: null,
+            error: err instanceof Error ? err.message : "Failed to load facts.",
+          },
+        }))
+      }
+    },
+    [locationLabel],
+  )
+
   if (landmarks.length === 0) {
     return (
       <p className="rounded-2xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
@@ -35,6 +87,7 @@ export function NearbyList({
         const selected = selectedId === lm.id
         const pending = pendingId === lm.id
         const wiki = wikipediaUrl(lm.wikipedia)
+        const facts = factsById[lm.id]
 
         return (
           <li key={lm.id}>
@@ -112,6 +165,44 @@ export function NearbyList({
                     <ExternalLink className="size-4" aria-hidden />
                     Info
                   </a>
+                ) : null}
+              </div>
+
+              {/* AI-generated interesting facts, loaded on demand per landmark. */}
+              <div className="mt-2">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    void loadFacts(lm)
+                  }}
+                  disabled={facts?.loading}
+                  className="inline-flex min-h-9 items-center gap-2 rounded-full px-2 text-sm font-semibold text-primary transition-colors hover:bg-primary/10 disabled:opacity-60"
+                >
+                  {facts?.loading ? (
+                    <Loader2 className="size-4 animate-spin" aria-hidden />
+                  ) : (
+                    <Sparkles className="size-4" aria-hidden />
+                  )}
+                  {facts?.facts ? "Show more facts" : "Interesting facts"}
+                </button>
+
+                {facts?.facts ? (
+                  <ul className="mt-2 flex flex-col gap-2 rounded-2xl bg-secondary/60 p-3">
+                    {facts.facts.map((fact, i) => (
+                      <li
+                        key={i}
+                        className="flex gap-2 text-sm leading-relaxed text-secondary-foreground text-pretty"
+                      >
+                        <span aria-hidden className="mt-1.5 size-1.5 shrink-0 rounded-full bg-primary" />
+                        <span>{fact}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+
+                {facts?.error ? (
+                  <p className="mt-2 text-sm text-muted-foreground">{facts.error}</p>
                 ) : null}
               </div>
             </article>
