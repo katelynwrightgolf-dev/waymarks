@@ -39,6 +39,10 @@ export function RecentVisit({ visit }: { visit: Visit }) {
         <span suppressHydrationWarning>{timeAgo(visit.visitedAt)}</span>
       </div>
 
+      {visit.description ? (
+        <p className="mt-4 text-sm leading-relaxed opacity-95 text-pretty">{visit.description}</p>
+      ) : null}
+
       {visit.note ? (
         <p className="mt-4 rounded-2xl bg-primary-foreground/10 p-3 text-sm leading-relaxed">
           &ldquo;{visit.note}&rdquo;

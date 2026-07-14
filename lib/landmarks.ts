@@ -80,11 +80,15 @@ function trimExtract(extract?: string): string | null {
   if (!extract) return null
   const clean = extract.trim()
   if (!clean) return null
-  // Keep the first sentence or two so cards stay compact.
-  if (clean.length <= 240) return clean
-  const cut = clean.slice(0, 240)
+  // Keep several full sentences so the fact is genuinely interesting (history,
+  // significance, notable details) rather than a bare one-liner, while still
+  // staying readable on a card. ~520 chars ≈ 3-4 sentences.
+  const MAX = 520
+  if (clean.length <= MAX) return clean
+  const cut = clean.slice(0, MAX)
+  // Prefer to end on a complete sentence.
   const lastStop = cut.lastIndexOf(". ")
-  return (lastStop > 80 ? cut.slice(0, lastStop + 1) : cut.trimEnd() + "…")
+  return lastStop > 160 ? cut.slice(0, lastStop + 1) : cut.trimEnd() + "…"
 }
 
 // Great-circle distance in meters between two lat/lng points.

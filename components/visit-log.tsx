@@ -54,6 +54,11 @@ export function VisitLog({ visits, onDelete, onSaveNote }: VisitLogProps) {
                   <span aria-hidden>·</span>
                   <span>{visit.visitedBy}</span>
                 </div>
+                {visit.description ? (
+                  <p className="mt-2 text-sm leading-relaxed text-muted-foreground text-pretty">
+                    {visit.description}
+                  </p>
+                ) : null}
               </div>
               <button
                 type="button"
