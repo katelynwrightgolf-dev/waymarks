@@ -55,10 +55,12 @@ async function fromOpenMeteo(q: string, signal: AbortSignal): Promise<GeoResult[
     }>
   }
   let results = (data.results ?? []).filter((r) => !r.country_code || r.country_code === "US")
-  // If the user named a state, keep only matches in that state.
+  // If the user named a state, keep ONLY matches in that state. If none match
+  // (Open-Meteo lacks many small places), return nothing so the caller falls
+  // through to Nominatim rather than silently returning a same-named city in
+  // the wrong state (e.g. "Lexington, WA" → Lexington, KY).
   if (state) {
-    const inState = results.filter((r) => r.admin1?.toLowerCase() === state.toLowerCase())
-    if (inState.length) results = inState
+    results = results.filter((r) => r.admin1?.toLowerCase() === state.toLowerCase())
   }
   return results.map((r) => ({
     lat: r.latitude,
@@ -70,9 +72,10 @@ async function fromOpenMeteo(q: string, signal: AbortSignal): Promise<GeoResult[
 // Provider 2: OpenStreetMap Nominatim — handles landmarks, neighborhoods, and
 // full addresses that Open-Meteo can't. Used as a fallback.
 async function fromNominatim(q: string, signal: AbortSignal): Promise<GeoResult[]> {
+  const { state } = splitState(q)
   const url =
     "https://nominatim.openstreetmap.org/search?" +
-    new URLSearchParams({ q, format: "json", addressdetails: "0", limit: "10", countrycodes: "us" })
+    new URLSearchParams({ q, format: "json", addressdetails: "1", limit: "10", countrycodes: "us" })
   const res = await fetch(url, {
     headers: {
       // Nominatim requires a descriptive User-Agent or it returns 403.
@@ -83,19 +86,29 @@ async function fromNominatim(q: string, signal: AbortSignal): Promise<GeoResult[
     next: { revalidate: 3600 },
   })
   if (!res.ok) return []
-  const raw = (await res.json()) as Array<{
+  let raw = (await res.json()) as Array<{
     lat: string
     lon: string
     display_name: string
     class?: string
     type?: string
     importance?: number
+    address?: { state?: string }
   }>
 
-  // Prefer actual settlements (city/town/village) over county/state boundaries
-  // so "Walla Walla WA" resolves to the town center — where landmarks are —
-  // instead of the rural county centroid.
-  const settlementTypes = new Set(["city", "town", "village", "hamlet", "municipality"])
+  // If the user named a state, keep only results actually in that state so a
+  // same-named place elsewhere (e.g. "...Washington County, Iowa") is excluded.
+  if (state) {
+    const inState = raw.filter((r) => r.address?.state?.toLowerCase() === state.toLowerCase())
+    if (inState.length) raw = inState
+  }
+
+  // Prefer actual settlements (city/town/village/suburb) over county/state
+  // boundaries so "Walla Walla WA" resolves to the town center — where
+  // landmarks are — instead of the rural county centroid.
+  const settlementTypes = new Set([
+    "city", "town", "village", "hamlet", "municipality", "suburb",
+  ])
   const rank = (r: { class?: string; type?: string }) => {
     if (r.class === "place" && settlementTypes.has(r.type ?? "")) return 0
     if (r.class === "place") return 1
