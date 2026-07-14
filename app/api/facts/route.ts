@@ -1,4 +1,5 @@
 import { generateText } from "ai"
+import { anthropic } from "@ai-sdk/anthropic"
 
 export const maxDuration = 30
 
@@ -34,9 +35,10 @@ export async function POST(request: Request) {
 
   try {
     const { text } = await generateText({
-      // Claude, via the Vercel AI Gateway (zero-config, no separate Anthropic
-      // account needed). Haiku is fast and low-cost — a good fit for short facts.
-      model: "anthropic/claude-haiku-4.5",
+      // Claude via your own Anthropic account. The provider reads your key from
+      // the ANTHROPIC_API_KEY env var, so usage bills directly to Anthropic
+      // (not the Vercel AI Gateway). Haiku is fast and cheap for short facts.
+      model: anthropic("claude-haiku-4-5"),
       system:
         "You are a knowledgeable local historian and tour guide. " +
         "Given a place, share genuinely interesting, specific, and lesser-known facts about it: " +
