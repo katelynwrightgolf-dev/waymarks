@@ -11,6 +11,11 @@ type MapViewProps = {
   visitedIds: Set<string>
   selectedId: string | null
   onSelect: (id: string) => void
+  // Hide the blue "you are here" dot (used on the visited-places map, where
+  // there is no live location to show).
+  showMe?: boolean
+  // Auto-zoom/pan so every pin is framed, instead of centering on `center`.
+  fitToLandmarks?: boolean
 }
 
 function themeColor(variable: string, fallback: string) {
@@ -40,7 +45,15 @@ function pinIcon(color: string, selected: boolean) {
 // throws "Map container is being reused by another instance" and crashes the
 // page. Creating the map in an effect and calling map.remove() on cleanup
 // makes remounts (StrictMode, HMR, navigation) safe.
-export default function MapView({ center, landmarks, visitedIds, selectedId, onSelect }: MapViewProps) {
+export default function MapView({
+  center,
+  landmarks,
+  visitedIds,
+  selectedId,
+  onSelect,
+  showMe = true,
+  fitToLandmarks = false,
+}: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<L.Map | null>(null)
   const markerLayerRef = useRef<L.LayerGroup | null>(null)
@@ -65,15 +78,17 @@ export default function MapView({ center, landmarks, visitedIds, selectedId, onS
     }).addTo(map)
 
     markerLayerRef.current = L.layerGroup().addTo(map)
-    meMarkerRef.current = L.circleMarker(center, {
-      radius: 9,
-      color: "#ffffff",
-      weight: 3,
-      fillColor: "#2563eb",
-      fillOpacity: 1,
-    })
-      .addTo(map)
-      .bindPopup("You are here")
+    if (showMe) {
+      meMarkerRef.current = L.circleMarker(center, {
+        radius: 9,
+        color: "#ffffff",
+        weight: 3,
+        fillColor: "#2563eb",
+        fillOpacity: 1,
+      })
+        .addTo(map)
+        .bindPopup("You are here")
+    }
 
     // Leaflet occasionally needs a nudge once its container has real size.
     setTimeout(() => map.invalidateSize(), 0)
@@ -89,17 +104,19 @@ export default function MapView({ center, landmarks, visitedIds, selectedId, onS
   }, [])
 
   // Recenter the map and the "you are here" marker when the location changes.
+  // Skipped when fitToLandmarks is on — bounds fitting owns the viewport there.
   useEffect(() => {
     const map = mapRef.current
-    if (!map) return
+    if (!map || fitToLandmarks) return
     map.setView(center, map.getZoom(), { animate: true })
     meMarkerRef.current?.setLatLng(center)
-  }, [center])
+  }, [center, fitToLandmarks])
 
   // Rebuild landmark markers whenever the data or selection changes.
   useEffect(() => {
+    const map = mapRef.current
     const layer = markerLayerRef.current
-    if (!layer) return
+    if (!map || !layer) return
     layer.clearLayers()
 
     const primary = themeColor("--primary", "oklch(0.52 0.14 39)")
@@ -116,7 +133,14 @@ export default function MapView({ center, landmarks, visitedIds, selectedId, onS
         .on("click", () => onSelectRef.current(lm.id))
       layer.addLayer(marker)
     }
-  }, [landmarks, visitedIds, selectedId])
+
+    // Frame every pin (e.g. all the places you've visited). maxZoom keeps a
+    // lone pin from zooming in too far.
+    if (fitToLandmarks && landmarks.length > 0) {
+      const bounds = L.latLngBounds(landmarks.map((lm) => [lm.lat, lm.lng] as [number, number]))
+      map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 })
+    }
+  }, [landmarks, visitedIds, selectedId, fitToLandmarks])
 
   return <div ref={containerRef} className="h-full w-full" style={{ background: "var(--muted)" }} />
 }

@@ -65,6 +65,29 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
   const visitedIds = useMemo(() => new Set(visits.map((v) => v.landmarkId)), [visits])
   const recentVisit = visits[0] ?? null
 
+  // Every place we've logged, deduped by landmark id (a spot can be logged more
+  // than once), shaped as Landmark[] so the map can pin them on the Visited tab.
+  const visitedLandmarks = useMemo<Landmark[]>(() => {
+    const seen = new Set<string>()
+    const out: Landmark[] = []
+    for (const v of visits) {
+      if (seen.has(v.landmarkId)) continue
+      seen.add(v.landmarkId)
+      out.push({
+        id: v.landmarkId,
+        name: v.name,
+        category: v.category,
+        kind: "landmark",
+        lat: v.lat,
+        lng: v.lng,
+        description: v.description,
+        wikipedia: v.wikipedia,
+        imageUrl: v.imageUrl,
+      })
+    }
+    return out
+  }, [visits])
+
   // Split results into towns vs. individual landmarks so we can filter/count.
   const townCount = useMemo(() => landmarks.filter((l) => l.kind === "town").length, [landmarks])
   const landmarkCount = landmarks.length - townCount
@@ -454,10 +477,26 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
         )}
       </section>
 
-      {/* Map */}
-      {mapCenter ? (
+      {/* Map — pins for nearby results, or every place we've visited. */}
+      {tab === "visited" ? (
+        visitedLandmarks.length > 0 ? (
+          <div className="h-72 overflow-hidden rounded-3xl border border-border">
+            <MapView
+              key="visited-map"
+              center={[visitedLandmarks[0].lat, visitedLandmarks[0].lng]}
+              landmarks={visitedLandmarks}
+              visitedIds={visitedIds}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              showMe={false}
+              fitToLandmarks
+            />
+          </div>
+        ) : null
+      ) : mapCenter ? (
         <div className="h-72 overflow-hidden rounded-3xl border border-border">
           <MapView
+            key="nearby-map"
             center={mapCenter}
             landmarks={filteredLandmarks}
             visitedIds={visitedIds}
