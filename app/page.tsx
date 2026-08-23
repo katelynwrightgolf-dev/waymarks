@@ -3,6 +3,7 @@ import { redirect } from "next/navigation"
 import { MapPinned } from "lucide-react"
 
 import { getVisits } from "@/app/actions/visits"
+import { viewerIsOwner } from "@/app/actions/invites"
 import { LandmarkTracker } from "@/components/landmark-tracker"
 import { AccountMenu } from "@/components/account-menu"
 import { auth } from "@/lib/auth"
@@ -13,7 +14,7 @@ export default async function HomePage() {
   const session = await auth.api.getSession({ headers: await headers() })
   if (!session?.user) redirect("/sign-in")
 
-  const initialVisits = await getVisits()
+  const [initialVisits, ownerViewing] = await Promise.all([getVisits(), viewerIsOwner()])
   const displayName = (session.user as { username?: string; name?: string }).username ?? session.user.name
 
   return (
@@ -26,7 +27,7 @@ export default async function HomePage() {
           <h1 className="font-serif text-2xl font-semibold leading-tight text-foreground">Waymarks</h1>
           <p className="truncate text-sm text-muted-foreground">{displayName}&apos;s historic stops</p>
         </div>
-        <AccountMenu username={displayName ?? "you"} />
+        <AccountMenu username={displayName ?? "you"} isOwner={ownerViewing} />
       </header>
 
       <LandmarkTracker initialVisits={initialVisits} />

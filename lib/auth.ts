@@ -1,10 +1,22 @@
 import { betterAuth } from "better-auth"
+import { APIError } from "better-auth/api"
 import { username } from "better-auth/plugins/username"
 import { passkey } from "@better-auth/passkey"
 import { nextCookies } from "better-auth/next-js"
 import { Pool } from "pg"
 
+import {
+  adoptOrphanVisits,
+  attachInviteToUser,
+  noAccountsYet,
+  normalizeCode,
+  reserveInviteCode,
+} from "@/lib/invite-guard"
+
 const isDev = process.env.NODE_ENV === "development"
+
+/** Recorded on the owner account, which is created without an invite code. */
+const OWNER_MARKER = "OWNER"
 
 /**
  * Env values arrive single-quoted, which would make the origin string fail an
@@ -60,7 +72,48 @@ export const auth = betterAuth({
   user: {
     additionalFields: {
       // Which invite code this account was created with, for the invite log.
-      inviteCode: { type: "string", required: false, input: false },
+      // input: true so the sign-up request can carry it to the hook below,
+      // where it is validated before any row is written.
+      inviteCode: { type: "string", required: false, input: true },
+    },
+  },
+
+  databaseHooks: {
+    user: {
+      create: {
+        /**
+         * The real invite gate. This runs on every path that creates a user,
+         * including a direct POST to /api/auth/sign-up/email, so an invite
+         * cannot be skipped by calling the API instead of using the form.
+         */
+        before: async (newUser: Record<string, unknown>) => {
+          if (await noAccountsYet()) {
+            // First account is the owner and needs no invite.
+            return { data: { ...newUser, inviteCode: OWNER_MARKER } }
+          }
+
+          const code = normalizeCode(newUser.inviteCode)
+          if (!code) {
+            throw new APIError("BAD_REQUEST", { message: "An invite code is required to join." })
+          }
+          if (!(await reserveInviteCode(code))) {
+            throw new APIError("BAD_REQUEST", {
+              message: "That invite code is not valid, or it has already been used.",
+            })
+          }
+
+          return { data: { ...newUser, inviteCode: code } }
+        },
+        after: async (createdUser: { id: string; inviteCode?: string | null }) => {
+          const code = normalizeCode(createdUser.inviteCode)
+          if (code === OWNER_MARKER) {
+            // The owner adopts the check-ins logged before accounts existed.
+            await adoptOrphanVisits(createdUser.id)
+            return
+          }
+          if (code) await attachInviteToUser(code, createdUser.id)
+        },
+      },
     },
   },
 

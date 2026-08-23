@@ -1,18 +1,37 @@
 "use server"
 
 import { randomBytes } from "crypto"
-import { and, desc, eq, isNull, sql } from "drizzle-orm"
+import { and, desc, eq, isNull } from "drizzle-orm"
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
 
 import { auth } from "@/lib/auth"
 import { db } from "@/lib/db"
-import { invite, user, visits } from "@/lib/db/schema"
+import { invite } from "@/lib/db/schema"
+import { isOwner, noAccountsYet } from "@/lib/invite-guard"
 
 async function getUserId() {
   const session = await auth.api.getSession({ headers: await headers() })
   if (!session?.user) throw new Error("Unauthorized")
   return session.user.id
+}
+
+/**
+ * Only the owner may hand out invites. Enforced here in the data path rather
+ * than by hiding the page, since a server action is a callable endpoint that
+ * anyone signed in could otherwise invoke.
+ */
+async function getOwnerUserId() {
+  const userId = await getUserId()
+  if (!(await isOwner(userId))) throw new Error("Unauthorized")
+  return userId
+}
+
+/** Whether the signed-in person is allowed to see the invite screen at all. */
+export async function viewerIsOwner() {
+  const session = await auth.api.getSession({ headers: await headers() })
+  if (!session?.user) return false
+  return isOwner(session.user.id)
 }
 
 /** Human-friendly code: no 0/O/1/I to avoid transcription mistakes. */
@@ -28,12 +47,12 @@ function generateCode() {
 }
 
 export async function listInvites() {
-  await getUserId()
+  await getOwnerUserId()
   return db.select().from(invite).orderBy(desc(invite.createdAt))
 }
 
 export async function createInvite(label?: string) {
-  const userId = await getUserId()
+  const userId = await getOwnerUserId()
   const trimmed = label?.trim()
   const [row] = await db
     .insert(invite)
@@ -48,7 +67,7 @@ export async function createInvite(label?: string) {
 }
 
 export async function revokeInvite(id: number) {
-  await getUserId()
+  await getOwnerUserId()
   // Only unused invites can be revoked -- revoking a used one would be
   // meaningless since the account already exists.
   await db
@@ -60,11 +79,11 @@ export async function revokeInvite(id: number) {
 
 /**
  * True when no account exists yet. The very first sign-up is allowed without an
- * invite code (that's you), and it claims the existing check-ins.
+ * invite code (that's you), and it adopts the existing check-ins. Shares one
+ * implementation with the sign-up gate so the two can never disagree.
  */
 export async function isFirstRun() {
-  const [row] = await db.select({ n: sql<number>`count(*)::int` }).from(user)
-  return (row?.n ?? 0) === 0
+  return noAccountsYet()
 }
 
 /**
@@ -84,37 +103,9 @@ export async function checkInviteCode(code: string) {
 }
 
 /**
- * Marks an invite as used by the newly created account. The conditional UPDATE
- * is what makes this safe: two people racing the same code means only the
- * first UPDATE matches, and the loser is deleted below.
+ * Claiming a code and adopting the pre-account check-ins both happen inside
+ * Better Auth's user-creation hook (see lib/invite-guard.ts). They are
+ * deliberately not server actions: the sign-up HTTP endpoint is public, so a
+ * check that only runs in the form could be skipped, and a callable
+ * "adopt unowned visits" action could be invoked by any signed-in account.
  */
-export async function claimInvite(code: string) {
-  const userId = await getUserId()
-  const normalized = code.trim().toUpperCase()
-
-  const claimed = await db
-    .update(invite)
-    .set({ usedByUserId: userId, usedAt: new Date() })
-    .where(and(eq(invite.code, normalized), isNull(invite.usedByUserId), isNull(invite.revokedAt)))
-    .returning()
-
-  if (claimed.length === 0) {
-    // The code was bad or taken between validation and account creation.
-    // Remove the account we just made so no un-invited user can linger.
-    await db.delete(user).where(eq(user.id, userId))
-    throw new Error("That invite code is no longer valid.")
-  }
-
-  await db.update(user).set({ inviteCode: normalized }).where(eq(user.id, userId))
-}
-
-/**
- * One-time migration: the 62 check-ins logged before accounts existed have no
- * owner, so the first account to sign up adopts them.
- */
-export async function claimOrphanVisits() {
-  const userId = await getUserId()
-  const rows = await db.update(visits).set({ userId }).where(isNull(visits.userId)).returning({ id: visits.id })
-  revalidatePath("/")
-  return rows.length
-}

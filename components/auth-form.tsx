@@ -7,7 +7,6 @@ import { Fingerprint, Loader2, MapPin } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { authClient } from "@/lib/auth-client"
-import { claimInvite, claimOrphanVisits } from "@/app/actions/invites"
 
 type Mode = "sign-in" | "sign-up"
 
@@ -20,12 +19,10 @@ export function AuthForm({ mode, firstRun = false }: { mode: Mode; firstRun?: bo
   const [inviteCode, setInviteCode] = useState("")
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError(null)
-    setNotice(null)
     setPending(true)
 
     try {
@@ -44,19 +41,13 @@ export function AuthForm({ mode, firstRun = false }: { mode: Mode; firstRun?: bo
           password,
           name: username.trim(),
           username: username.trim(),
+          // Validated and consumed server-side during user creation, so a
+          // bad code fails the sign-up itself rather than after the fact.
+          inviteCode: code,
         })
         if (res.error) {
           setError(friendlyError(res.error.message))
           return
-        }
-
-        if (firstRun) {
-          // The owner adopts the check-ins logged before accounts existed.
-          const adopted = await claimOrphanVisits()
-          if (adopted > 0) setNotice(`${adopted} existing check-ins added to your log.`)
-        } else {
-          // Consume the code; throws if it was taken in the meantime.
-          await claimInvite(code)
         }
       } else {
         const res = await authClient.signIn.username({
@@ -175,12 +166,6 @@ export function AuthForm({ mode, firstRun = false }: { mode: Mode; firstRun?: bo
             {error}
           </p>
         )}
-        {notice && (
-          <p role="status" className="rounded-lg bg-accent/20 px-3 py-2 text-sm text-accent-foreground">
-            {notice}
-          </p>
-        )}
-
         <Button type="submit" disabled={pending} className="min-h-11 w-full text-base">
           {pending && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
           {isSignUp ? (firstRun ? "Create owner account" : "Join with invite") : "Sign in"}

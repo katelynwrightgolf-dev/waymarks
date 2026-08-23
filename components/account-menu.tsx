@@ -7,7 +7,7 @@ import { Fingerprint, LogOut, Ticket, User } from "lucide-react"
 
 import { authClient } from "@/lib/auth-client"
 
-export function AccountMenu({ username }: { username: string }) {
+export function AccountMenu({ username, isOwner = false }: { username: string; isOwner?: boolean }) {
   const router = useRouter()
   const [open, setOpen] = useState(false)
   const [status, setStatus] = useState<string | null>(null)
@@ -62,15 +62,17 @@ export function AccountMenu({ username }: { username: string }) {
             <p className="text-xs text-muted-foreground">Your private log</p>
           </div>
 
-          <Link
-            href="/invites"
-            role="menuitem"
-            onClick={() => setOpen(false)}
-            className="flex min-h-11 items-center gap-3 px-4 text-sm text-card-foreground hover:bg-muted"
-          >
-            <Ticket className="size-4" aria-hidden="true" />
-            Invite people
-          </Link>
+          {isOwner && (
+            <Link
+              href="/invites"
+              role="menuitem"
+              onClick={() => setOpen(false)}
+              className="flex min-h-11 items-center gap-3 px-4 text-sm text-card-foreground hover:bg-muted"
+            >
+              <Ticket className="size-4" aria-hidden="true" />
+              Invite people
+            </Link>
+          )}
 
           <button
             type="button"
