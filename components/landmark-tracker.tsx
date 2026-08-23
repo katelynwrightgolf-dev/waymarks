@@ -513,7 +513,7 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
               {(
                 [
                   { key: "all", label: `All (${landmarks.length})` },
-                  { key: "landmark", label: `Landmarks (${landmarkCount})` },
+                    { key: "landmark", label: `Historic (${landmarkCount})` },
                   { key: "town", label: `Towns (${townCount})` },
                 ] as const
               ).map((opt) => (

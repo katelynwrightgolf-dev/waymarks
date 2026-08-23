@@ -31,6 +31,34 @@ function classifyKind(shortDesc?: string): LandmarkKind {
   return townPattern.test(d) ? "town" : "landmark"
 }
 
+// Wikipedia's GeoSearch returns EVERY article near a point — high schools,
+// hospitals, malls, stadiums, radio stations — most of which aren't historical
+// marks. These two patterns let us keep only genuine heritage sites.
+
+// Everyday modern institutions. Dropped unless they carry a real historic
+// designation (see STRONG_HISTORIC), which is how a schoolhouse listed on the
+// National Register still makes the cut while the local high school doesn't.
+const MODERN_NOISE =
+  /\b(high school|middle school|elementary school|primary school|secondary school|junior high|school district|charter school|private school|public school|community college|university|college|hospital|medical cent(er|re)|clinic|shopping (mall|cent(er|re))|supermarket|grocery|restaurant|hotel|motel|apartment|condominium|office (building|tower)|skyscraper|radio station|television station|tv station|newspaper|magazine|company|corporation|manufacturer|retailer|bank|credit union|airport|heliport|bus (station|terminal)|light rail|metro station|subway station|transit cent(er|re)|(football|soccer|baseball|basketball|hockey) (team|club)|stadium|arena|golf course|country club|nightclub|night club|gay bar|sports bar|dive bar|strip club|bar and|bar in|pub in|tavern in|cocktail|brewery|winery|distillery|dispensary|gas station|parking (lot|garage)|fire station|police station|prison|correctional|data cent(er|re)|power (plant|station)|wastewater|landfill|warehouse|business park|industrial park|shopping district|neighborhood|neighbourhood|park in|public park|bridge carrying|highway|freeway|interstate|state route|road in|street in)\b/i
+
+// Signals that a place genuinely is a historical mark / heritage site.
+const HISTORIC_SIGNAL =
+  /\b(historic|historical|national register|nrhp|national historic landmark|heritage|monument|memorial|museum|marker|plaque|landmark|ruins?|archaeolog|battlefield|fort|fortress|mission|pioneer|settler|antebellum|victorian|colonial|courthouse|cathedral|basilica|chapel|meeting house|homestead|mansion|manor|covered bridge|lighthouse|depot|roundhouse|opera house|theatre|theater|city hall|capitol|cemetery|graveyard|burial|shipwreck|grist ?mill|sawmill|mine|smelter|trading post|stagecoach|oregon trail|founded in 1[5-9]\d\d|built in 1[5-9]\d\d|established in 1[5-9]\d\d|(1[5-8]\d\d|19[0-2]\d)s?\b|(16|17|18|19)th[- ]century)\b/i
+
+// A formal heritage designation — strong enough to rescue an otherwise modern
+// institution from being filtered out.
+const STRONG_HISTORIC =
+  /\b(national register of historic places|national historic landmark|historic district|historic site|listed on the national register|heritage (register|site)|historical society)\b/i
+
+// Decide whether a Wikipedia result belongs in a historical-landmarks list.
+function isHistoricPlace(name: string, shortDesc?: string, extract?: string): boolean {
+  const label = `${name} ${shortDesc ?? ""}`
+  const haystack = `${label} ${extract ?? ""}`
+  // Modern institution? Require a formal heritage designation to keep it.
+  if (MODERN_NOISE.test(label)) return STRONG_HISTORIC.test(haystack)
+  return HISTORIC_SIGNAL.test(haystack)
+}
+
 type GeoSearchResult = {
   pageid: number
   title: string
@@ -137,7 +165,16 @@ async function fetchOverpassHistoric(
   const dLat = radius / 111320
   const dLng = radius / (111320 * Math.cos((lat * Math.PI) / 180))
   const bbox = `${lat - dLat},${lng - dLng},${lat + dLat},${lng + dLng}`
-  const query = `[out:json][timeout:25];nwr[historic][name](${bbox});out center tags 400;`
+  // Union of everything that represents a historical mark: any historic=* site,
+  // commemorative plaques, and roadside historical-information boards. The
+  // plaque/board queries are what surface actual historical markers, which
+  // rarely have their own Wikipedia article.
+  const query =
+    `[out:json][timeout:25];(` +
+    `nwr[historic][name](${bbox});` +
+    `nwr[man_made=plaque][name](${bbox});` +
+    `nwr[tourism=information][information~"^(board|plaque|history|historical)"][name](${bbox});` +
+    `);out center tags 400;`
 
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 14000)
@@ -168,11 +205,18 @@ async function fetchOverpassHistoric(
       // bbox is a square; drop corners that fall outside the requested circle.
       if (dist > radius) continue
       const historic = el.tags?.historic
-      // Turn "memorial" / "monument" / "yes" into a friendly category.
+      const isPlaque =
+        el.tags?.man_made === "plaque" ||
+        el.tags?.memorial === "plaque" ||
+        el.tags?.tourism === "information"
+      // Turn "memorial" / "monument" / "yes" into a friendly category, and label
+      // plaques and information boards as the historical markers they are.
       const category =
         historic && historic !== "yes"
           ? `Historic ${historic.replace(/_/g, " ")}`.replace(/\b\w/, (c) => c.toUpperCase())
-          : "Historic site"
+          : isPlaque
+            ? "Historical marker"
+            : "Historic site"
       out.push({
         id: `osm/${el.type}/${el.id}`,
         name,
@@ -259,24 +303,32 @@ export async function fetchNearbyLandmarks(
     }
   }
 
-  const wikiLandmarks: Landmark[] = kept.map((r) => {
-    const detail = details.get(r.pageid)
-    const shortDesc = detail?.description
-    return {
-      id: `wikipedia/${r.pageid}`,
-      name: r.title,
-      // Wikidata's short description (e.g. "Historic house in Boston") makes
-      // a great category line; fall back to a generic label.
-      category: shortDesc ? shortDesc.replace(/\b\w/, (c) => c.toUpperCase()) : "Landmark",
-      kind: classifyKind(shortDesc),
-      lat: r.lat,
-      lng: r.lon,
-      description: trimExtract(detail?.extract),
-      wikipedia: `en:${r.title}`,
-      imageUrl: detail?.thumbnail?.source ?? null,
-      distanceMeters: r.dist,
-    }
-  })
+  const wikiLandmarks: Landmark[] = kept
+    .map((r) => {
+      const detail = details.get(r.pageid)
+      const shortDesc = detail?.description
+      const kind = classifyKind(shortDesc)
+      return {
+        id: `wikipedia/${r.pageid}`,
+        name: r.title,
+        // Wikidata's short description (e.g. "Historic house in Boston") makes
+        // a great category line; fall back to a generic label.
+        category: shortDesc ? shortDesc.replace(/\b\w/, (c) => c.toUpperCase()) : "Landmark",
+        kind,
+        lat: r.lat,
+        lng: r.lon,
+        description: trimExtract(detail?.extract),
+        wikipedia: `en:${r.title}`,
+        imageUrl: detail?.thumbnail?.source ?? null,
+        distanceMeters: r.dist,
+        // Towns are always kept (the Towns filter depends on them). Everything
+        // else has to read as a genuine historical mark rather than, say, the
+        // local high school or shopping mall.
+        _keep: kind === "town" || isHistoricPlace(r.title, shortDesc, detail?.extract),
+      }
+    })
+    .filter((l) => l._keep)
+    .map(({ _keep, ...rest }) => rest)
 
   // Merge in OSM historic sites, skipping any that duplicate a Wikipedia entry
   // (same normalized name, or already linked to a Wikipedia article).
