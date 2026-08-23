@@ -39,24 +39,70 @@ function classifyKind(shortDesc?: string): LandmarkKind {
 // designation (see STRONG_HISTORIC), which is how a schoolhouse listed on the
 // National Register still makes the cut while the local high school doesn't.
 const MODERN_NOISE =
-  /\b(high school|middle school|elementary school|primary school|secondary school|junior high|school district|charter school|private school|public school|community college|university|college|hospital|medical cent(er|re)|clinic|shopping (mall|cent(er|re))|supermarket|grocery|restaurant|hotel|motel|apartment|condominium|office (building|tower)|skyscraper|radio station|television station|tv station|newspaper|magazine|company|corporation|manufacturer|retailer|bank|credit union|airport|heliport|bus (station|terminal)|light rail|metro station|subway station|transit cent(er|re)|(football|soccer|baseball|basketball|hockey) (team|club)|stadium|arena|golf course|country club|nightclub|night club|gay bar|sports bar|dive bar|strip club|bar and|bar in|pub in|tavern in|cocktail|brewery|winery|distillery|dispensary|gas station|parking (lot|garage)|fire station|police station|prison|correctional|data cent(er|re)|power (plant|station)|wastewater|landfill|warehouse|business park|industrial park|shopping district|neighborhood|neighbourhood|park in|public park|bridge carrying|highway|freeway|interstate|state route|road in|street in)\b/i
+  /\b(high school|middle school|elementary school|primary school|secondary school|junior high|school district|charter school|private school|public school|community college|university|college|hospital|medical cent(er|re)|clinic|shopping (mall|cent(er|re))|supermarket|grocery|restaurant|hotel|motel|apartment|condominium|office (building|tower)|skyscraper|radio station|television station|tv station|newspaper|magazine|company|corporation|manufacturer|retailer|bank|credit union|airport|heliport|bus (station|terminal)|light rail|metro station|subway station|transit cent(er|re)|(football|soccer|baseball|basketball|hockey) (team|club)|stadium|arena|golf course|country club|nightclub|night club|gay bar|sports bar|dive bar|strip club|cocktail lounge|brewery|winery|distillery|dispensary|food cart|food truck|food hall|beer garden|bookstore|book ?shop|record store|thrift store|coffee (shop|house|roaster)|bakery|housing authority|gas station|parking (lot|garage)|fire station|police station|prison|correctional|data cent(er|re)|power (plant|station)|wastewater|landfill|warehouse|business park|industrial park|shopping district|neighborhood|neighbourhood|(city|public|state|national|regional|county|amusement|water|skate|dog) park\b|bridge carrying|highway|freeway|interstate|state route|road in|street in)\b/i
 
 // Signals that a place genuinely is a historical mark / heritage site.
 const HISTORIC_SIGNAL =
-  /\b(historic|historical|national register|nrhp|national historic landmark|heritage|monument|memorial|museum|marker|plaque|landmark|ruins?|archaeolog|battlefield|fort|fortress|mission|pioneer|settler|antebellum|victorian|colonial|courthouse|cathedral|basilica|chapel|meeting house|homestead|mansion|manor|covered bridge|lighthouse|depot|roundhouse|opera house|theatre|theater|city hall|capitol|cemetery|graveyard|burial|shipwreck|grist ?mill|sawmill|mine|smelter|trading post|stagecoach|oregon trail|founded in 1[5-9]\d\d|built in 1[5-9]\d\d|established in 1[5-9]\d\d|(1[5-8]\d\d|19[0-2]\d)s?\b|(16|17|18|19)th[- ]century)\b/i
+  /\b(historic|historical|national register|nrhp|national historic landmark|heritage|monument|memorial|museum|marker|plaque|landmark|ruins?|archaeolog|battlefield|fort|fortress|mission|pioneer|settler|antebellum|victorian|colonial|courthouse|cathedral|basilica|chapel|meeting house|homestead|mansion|manor|covered bridge|lighthouse|depot|roundhouse|opera house|theatre|theater|city hall|capitol|cemetery|graveyard|burial|shipwreck|grist ?mill|sawmill|mine|smelter|trading post|stagecoach|saloon|tavern|schoolhouse|one[- ]room school|blacksmith|apothecary|log cabin|adobe|petroglyph|pictograph|burial mound|earthwork|windmill|canal|aqueduct|jail|gallows|oregon trail|(founded|built|established|constructed|erected|dedicated) in (1[5-8]\d\d|19[0-2]\d)|(1[5-8]\d\d|19[0-2]\d)s?\b|(16|17|18|19)th[- ]century)\b/i
 
 // A formal heritage designation — strong enough to rescue an otherwise modern
 // institution from being filtered out.
 const STRONG_HISTORIC =
   /\b(national register of historic places|national historic landmark|historic district|historic site|listed on the national register|heritage (register|site)|historical society)\b/i
 
+// Commemorative works — a statue, bust, or monument exists specifically to
+// remember a person or event, so it always belongs in this list even when the
+// article never uses the word "historic".
+const COMMEMORATIVE =
+  /\b(statue|statues|bust of|equestrian|monument|memorial|cenotaph|obelisk|totem pole|war memorial|commemorat|effigy|sculpture of|relief sculpture|fountain of)\b/i
+
+// "Really interesting history" — places whose story is the draw, even without a
+// formal heritage designation: battles, disasters, crimes, folklore. Each of
+// these is strong enough on its own to qualify a place.
+const INTERESTING_HISTORY =
+  /\b(battle|siege|massacre|skirmish|treaty|uprising|rebellion|revolt|riot|labor strike|civil war|revolutionary war|world war|war of 1812|underground railroad|abolitionist|suffrage|civil rights|internment|gold rush|silver rush|boomtown|ghost town|homestead act|lewis and clark|oregon trail|santa fe trail|pony express|transcontinental|indigenous|tribal|native american|first nations|birthplace|grave of|buried here|assassinat|duel|gunfight|outlaw|bank robbery|shootout|bootleg|speakeasy|prohibition|smuggl|shipwreck|disaster|great fire|conflagration|earthquake|flood of|epidemic|pandemic|quarantine|plague|explosion|derailment|legend|folklore|haunted|ghost story|pioneer|frontier|expedition|fur trade|whaling|cannery|logging camp|railroad town|company town|utopian|commune)\b/i
+
+// Weak, ambiguous cues. "The city's oldest…" or "named after…" describes a
+// modern food-cart pod just as easily as a heritage site, so these only count
+// when the text ALSO carries a genuine period cue (see PERIOD_CUE).
+const STORY_WEAK =
+  /\b((the )?(first|oldest|last surviving|only remaining|longest[- ]running)|named (after|for)|namesake|home of|residence of|childhood home|founded by|settled by|former site|site of)\b/i
+
+// Contemporary public art, e.g. "1990 sculpture by John T. Young". It's a
+// statue, but not a historical one — so it has to earn its place through an
+// actual story rather than the blanket commemorative pass below.
+const MODERN_ART =
+  /\b(19[3-9]\d|20[0-2]\d) (sculpture|statue|artwork|mural|installation|fountain)\b/i
+
+// Evidence the place actually dates from a historical era.
+const PERIOD_CUE =
+  /\b((1[5-8]\d\d|19[0-2]\d)s?|(16|17|18|19)th[- ]century|antebellum|victorian|colonial|pioneer|frontier)\b/i
+
 // Decide whether a Wikipedia result belongs in a historical-landmarks list.
 function isHistoricPlace(name: string, shortDesc?: string, extract?: string): boolean {
   const label = `${name} ${shortDesc ?? ""}`
   const haystack = `${label} ${extract ?? ""}`
-  // Modern institution? Require a formal heritage designation to keep it.
+  // Modern institution? Require a formal heritage designation to keep it. This
+  // runs first so "Memorial Hospital" / "Memorial Stadium" don't sneak in via
+  // the commemorative check below.
   if (MODERN_NOISE.test(label)) return STRONG_HISTORIC.test(haystack)
-  return HISTORIC_SIGNAL.test(haystack)
+  // Contemporary public art is only kept when the work itself is commemorative
+  // — a memorial/monument, or a statue OF someone. We judge this on the title
+  // and short description alone, because a passing mention of, say, a pioneer
+  // in the article body doesn't make an abstract modern sculpture historical.
+  if (MODERN_ART.test(label)) {
+    return (
+      /\b(memorial|monument|commemorat|cenotaph)\b/i.test(label) ||
+      /\b(statue|bust) of [A-Z]/.test(label) ||
+      STRONG_HISTORIC.test(haystack)
+    )
+  }
+  // A statue/monument by name is commemorative by definition — always keep.
+  if (COMMEMORATIVE.test(label)) return true
+  // An explicit heritage cue, or a genuinely interesting story.
+  if (HISTORIC_SIGNAL.test(haystack) || INTERESTING_HISTORY.test(haystack)) return true
+  // Last resort: a weak cue ("the oldest…") counts only with a period cue.
+  return STORY_WEAK.test(haystack) && PERIOD_CUE.test(haystack)
 }
 
 type GeoSearchResult = {
@@ -165,15 +211,22 @@ async function fetchOverpassHistoric(
   const dLat = radius / 111320
   const dLng = radius / (111320 * Math.cos((lat * Math.PI) / 180))
   const bbox = `${lat - dLat},${lng - dLng},${lat + dLat},${lng + dLng}`
-  // Union of everything that represents a historical mark: any historic=* site,
-  // commemorative plaques, and roadside historical-information boards. The
-  // plaque/board queries are what surface actual historical markers, which
-  // rarely have their own Wikipedia article.
+  // Union of everything that represents a historical mark. The plaque and
+  // history-board queries are what surface actual roadside historical markers,
+  // which rarely have their own Wikipedia article; the memorial/artwork queries
+  // catch commemorative statues and busts.
+  //
+  // Note the information boards are matched on `information=history` or a
+  // history-related `board_type` rather than a bare `information=board` — a
+  // plain board is just as likely to be a trail map or transit timetable, which
+  // would pollute the list with things that aren't historical markers at all.
   const query =
     `[out:json][timeout:25];(` +
     `nwr[historic][name](${bbox});` +
     `nwr[man_made=plaque][name](${bbox});` +
-    `nwr[tourism=information][information~"^(board|plaque|history|historical)"][name](${bbox});` +
+    `nwr[tourism=information][information~"^(history|plaque)$"][name](${bbox});` +
+    `nwr[tourism=information][board_type~"^(history|historic)"][name](${bbox});` +
+    `nwr[memorial~"^(statue|bust|plaque|stele|stone|obelisk)$"][name](${bbox});` +
     `);out center tags 400;`
 
   const controller = new AbortController()
@@ -205,17 +258,27 @@ async function fetchOverpassHistoric(
       // bbox is a square; drop corners that fall outside the requested circle.
       if (dist > radius) continue
       const historic = el.tags?.historic
-      const isPlaque =
+      const memorial = el.tags?.memorial
+      const artwork = el.tags?.artwork_type
+      // A genuine roadside marker: a plaque or a dedicated history board.
+      const isMarker =
         el.tags?.man_made === "plaque" ||
-        el.tags?.memorial === "plaque" ||
+        memorial === "plaque" ||
+        memorial === "stele" ||
         el.tags?.tourism === "information"
-      // Turn "memorial" / "monument" / "yes" into a friendly category, and label
-      // plaques and information boards as the historical markers they are.
-      const category =
-        historic && historic !== "yes"
-          ? `Historic ${historic.replace(/_/g, " ")}`.replace(/\b\w/, (c) => c.toUpperCase())
-          : isPlaque
-            ? "Historical marker"
+      // A commemorative figure — statue, bust, or obelisk.
+      const isStatue =
+        memorial === "statue" ||
+        memorial === "bust" ||
+        memorial === "obelisk" ||
+        artwork === "statue" ||
+        artwork === "bust"
+      const category = isMarker
+        ? "Historical marker"
+        : isStatue
+          ? "Statue or monument"
+          : historic && historic !== "yes"
+            ? `Historic ${historic.replace(/_/g, " ")}`.replace(/\b\w/, (c) => c.toUpperCase())
             : "Historic site"
       out.push({
         id: `osm/${el.type}/${el.id}`,
@@ -224,7 +287,11 @@ async function fetchOverpassHistoric(
         kind: "landmark",
         lat: plat,
         lng: plng,
-        description: el.tags?.description ?? el.tags?.inscription ?? null,
+        // For a marker or plaque the inscription IS the history, so prefer it.
+        description:
+          (isMarker
+            ? (el.tags?.inscription ?? el.tags?.description)
+            : (el.tags?.description ?? el.tags?.inscription)) ?? null,
         wikipedia: el.tags?.wikipedia ?? null,
         imageUrl: null,
         distanceMeters: dist,
