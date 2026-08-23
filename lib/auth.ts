@@ -59,9 +59,24 @@ const baseURL =
   toOrigin(process.env.VERCEL_URL && `https://${process.env.VERCEL_URL}`) ||
   toOrigin(process.env.V0_RUNTIME_URL)
 
+/**
+ * Session cookies are signed with this. If it were missing in production,
+ * Better Auth would fall back to an internal default, which would make
+ * sessions forgeable -- so refuse to start instead of running insecurely.
+ */
+const secret = process.env.BETTER_AUTH_SECRET
+if (!secret && !isDev) {
+  throw new Error(
+    "BETTER_AUTH_SECRET is not set. Add it in v0 under Settings -> Vars (or in your " +
+      "Vercel project's Environment Variables) using any random 32+ character string, " +
+      "then redeploy. Sign-in cannot be secured without it.",
+  )
+}
+
 export const auth = betterAuth({
   database: new Pool({ connectionString: process.env.DATABASE_URL }),
   baseURL,
+  secret,
   trustedOrigins: isDev ? devOrigins : prodOrigins,
 
   // The username plugin signs up and stores credentials through this provider,
