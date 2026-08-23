@@ -34,6 +34,8 @@ export const session = pgTable("session", {
 
 export const account = pgTable("account", {
   id: text("id").primaryKey(),
+  // Required by Better Auth 1.7+: identifies the credential issuer.
+  issuer: text("issuer"),
   accountId: text("accountId").notNull(),
   providerId: text("providerId").notNull(),
   userId: text("userId")
@@ -82,15 +84,17 @@ export const passkey = pgTable("passkey", {
 // One-time invite codes. The app is invite-only: apart from the very first
 // (owner) account, signing up requires an unused, unexpired code.
 export const invite = pgTable("invite", {
-  code: text("code").primaryKey(),
-  // Who created the invite, and an optional label ("for Mom") to keep track.
-  createdBy: text("createdBy").notNull(),
+  id: serial("id").primaryKey(),
+  code: text("code").notNull().unique(),
+  // Optional label ("for Mom") so you can tell the codes apart.
   label: text("label"),
-  createdAt: timestamp("createdAt", { withTimezone: true }).notNull().defaultNow(),
-  expiresAt: timestamp("expiresAt", { withTimezone: true }),
+  createdByUserId: text("createdByUserId"),
   // Set once the code is redeemed, which is what makes it single-use.
-  usedBy: text("usedBy"),
-  usedAt: timestamp("usedAt", { withTimezone: true }),
+  usedByUserId: text("usedByUserId"),
+  usedAt: timestamp("usedAt"),
+  // Set when you cancel an unused code before anyone signs up with it.
+  revokedAt: timestamp("revokedAt"),
+  createdAt: timestamp("createdAt").notNull().defaultNow(),
 })
 
 export type Invite = typeof invite.$inferSelect

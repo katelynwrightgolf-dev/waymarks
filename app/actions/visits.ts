@@ -2,11 +2,26 @@
 
 import { db } from "@/lib/db"
 import { visits, type Visit } from "@/lib/db/schema"
-import { desc, eq } from "drizzle-orm"
+import { and, desc, eq } from "drizzle-orm"
 import { revalidatePath } from "next/cache"
+import { headers } from "next/headers"
+
+import { auth } from "@/lib/auth"
+
+/**
+ * There is no row-level security on Neon, so EVERY query below is scoped by
+ * this id. The `eq(visits.userId, userId)` in each where clause is the only
+ * thing keeping one person's log out of another's.
+ */
+async function getUserId() {
+  const session = await auth.api.getSession({ headers: await headers() })
+  if (!session?.user) throw new Error("Unauthorized")
+  return session.user.id
+}
 
 export async function getVisits(): Promise<Visit[]> {
-  return db.select().from(visits).orderBy(desc(visits.visitedAt))
+  const userId = await getUserId()
+  return db.select().from(visits).where(eq(visits.userId, userId)).orderBy(desc(visits.visitedAt))
 }
 
 export type CheckInInput = {
@@ -23,9 +38,11 @@ export type CheckInInput = {
 }
 
 export async function checkIn(input: CheckInInput): Promise<Visit> {
+  const userId = await getUserId()
   const [row] = await db
     .insert(visits)
     .values({
+      userId,
       landmarkId: input.landmarkId,
       name: input.name,
       description: input.description ?? null,
@@ -43,11 +60,16 @@ export async function checkIn(input: CheckInInput): Promise<Visit> {
 }
 
 export async function updateNote(id: number, note: string): Promise<void> {
-  await db.update(visits).set({ note: note.trim() || null }).where(eq(visits.id, id))
+  const userId = await getUserId()
+  await db
+    .update(visits)
+    .set({ note: note.trim() || null })
+    .where(and(eq(visits.id, id), eq(visits.userId, userId)))
   revalidatePath("/")
 }
 
 export async function deleteVisit(id: number): Promise<void> {
-  await db.delete(visits).where(eq(visits.id, id))
+  const userId = await getUserId()
+  await db.delete(visits).where(and(eq(visits.id, id), eq(visits.userId, userId)))
   revalidatePath("/")
 }

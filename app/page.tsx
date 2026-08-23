@@ -1,9 +1,20 @@
-import { getVisits } from "@/app/actions/visits"
-import { LandmarkTracker } from "@/components/landmark-tracker"
+import { headers } from "next/headers"
+import { redirect } from "next/navigation"
 import { MapPinned } from "lucide-react"
 
+import { getVisits } from "@/app/actions/visits"
+import { LandmarkTracker } from "@/components/landmark-tracker"
+import { AccountMenu } from "@/components/account-menu"
+import { auth } from "@/lib/auth"
+
 export default async function HomePage() {
+  // Server-side session check: this is the authorization boundary, and the
+  // visit query below is scoped to this user.
+  const session = await auth.api.getSession({ headers: await headers() })
+  if (!session?.user) redirect("/sign-in")
+
   const initialVisits = await getVisits()
+  const displayName = (session.user as { username?: string; name?: string }).username ?? session.user.name
 
   return (
     <main className="mx-auto min-h-dvh w-full max-w-xl px-4 pb-16 pt-6">
@@ -11,10 +22,11 @@ export default async function HomePage() {
         <div className="flex size-11 items-center justify-center rounded-2xl bg-primary text-primary-foreground">
           <MapPinned className="size-6" aria-hidden />
         </div>
-        <div>
+        <div className="min-w-0 flex-1">
           <h1 className="font-serif text-2xl font-semibold leading-tight text-foreground">Waymarks</h1>
-          <p className="text-sm text-muted-foreground">Historic stops from the road</p>
+          <p className="truncate text-sm text-muted-foreground">{displayName}&apos;s historic stops</p>
         </div>
+        <AccountMenu username={displayName ?? "you"} />
       </header>
 
       <LandmarkTracker initialVisits={initialVisits} />
