@@ -78,10 +78,20 @@ const MODERN_ART =
 const PERIOD_CUE =
   /\b((1[5-8]\d\d|19[0-2]\d)s?|(16|17|18|19)th[- ]century|antebellum|victorian|colonial|pioneer|frontier)\b/i
 
+// Abstract or administrative entities that are never a place you can walk past
+// and log: whole states, counties, wine regions, movements, organizations,
+// list/index articles. These often mention 1800s dates, so without this guard
+// they slip through the historic-year cue below.
+const NOT_A_LANDMARK =
+  /\b(u\.?s\.? state|state in the|county in|counties of|province in|prefecture|region in|metropolitan area|urban area|census area|census-designated|electoral district|congressional district|viticultural area|\bava\b|appellation|wine region|protest movement|social movement|political party|marketing organization|trade union|discography|filmography|television market|radio market|list of|index of|glossary)\b/i
+
 // Decide whether a Wikipedia result belongs in a historical-landmarks list.
 function isHistoricPlace(name: string, shortDesc?: string, extract?: string): boolean {
   const label = `${name} ${shortDesc ?? ""}`
   const haystack = `${label} ${extract ?? ""}`
+  // Not an individual site at all -> never a landmark, even if it cites old
+  // dates. (Towns are handled before this function is ever called.)
+  if (NOT_A_LANDMARK.test(label)) return false
   // Modern institution? Require a formal heritage designation to keep it. This
   // runs first so "Memorial Hospital" / "Memorial Stadium" don't sneak in via
   // the commemorative check below.
@@ -479,11 +489,17 @@ export async function searchLandmarksByName(
     // Only keep pages that are actual places (have coordinates on a map).
     if (!coord) continue
     const shortDesc = page.description
+    const kind = classifyKind(shortDesc)
+    // Apply the SAME heritage filter used for nearby results, so a name search
+    // can't surface a radio station, high school, university, or airport just
+    // because it matched the typed text. Towns are always kept (they power the
+    // Towns filter and are a legitimate thing to search for).
+    if (kind !== "town" && !isHistoricPlace(page.title, shortDesc, page.extract)) continue
     results.push({
       id: `wikipedia/${page.pageid}`,
       name: page.title,
       category: shortDesc ? shortDesc.replace(/\b\w/, (c) => c.toUpperCase()) : "Landmark",
-      kind: classifyKind(shortDesc),
+      kind,
       lat: coord.lat,
       lng: coord.lon,
       description: trimExtract(page.extract),
