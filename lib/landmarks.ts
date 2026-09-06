@@ -78,6 +78,17 @@ const MODERN_ART =
 const PERIOD_CUE =
   /\b((1[5-8]\d\d|19[0-2]\d)s?|(16|17|18|19)th[- ]century|antebellum|victorian|colonial|pioneer|frontier)\b/i
 
+// Broadcast stations (AM/FM radio, TV). Wikipedia titles these by bare callsign
+// ("KGDC", "KTEL (AM)") and often describes them only in the article body, so
+// the name+description MODERN_NOISE check can miss them. This is matched against
+// the FULL text and drops them outright — a radio station is never a heritage
+// site someone walks past and logs, even in the rare case it cites old dates or
+// a designation. Kept deliberately narrow (station descriptors, broadcast
+// frequencies, callsign markers) so a genuine "site of the first radio
+// broadcast" marker isn't caught.
+const BROADCAST =
+  /\bradio station\b|\btelevision station\b|\btv station\b|\b(?:am|fm) (?:radio )?station\b|\((?:am|fm)\)|\b\d{3,4}\s?khz\b|\b\d{2,3}\.\d\s?mhz\b|\bbroadcasting (?:on|a|an)\b|\bcall ?sign\b/i
+
 // Abstract or administrative entities that are never a place you can walk past
 // and log: whole states, counties, wine regions, movements, organizations,
 // list/index articles. These often mention 1800s dates, so without this guard
@@ -89,6 +100,9 @@ const NOT_A_LANDMARK =
 function isHistoricPlace(name: string, shortDesc?: string, extract?: string): boolean {
   const label = `${name} ${shortDesc ?? ""}`
   const haystack = `${label} ${extract ?? ""}`
+  // Broadcast station? Drop unconditionally, checking the whole article text so
+  // bare-callsign titles and format-only descriptions can't sneak through.
+  if (BROADCAST.test(haystack)) return false
   // Not an individual site at all -> never a landmark, even if it cites old
   // dates. (Towns are handled before this function is ever called.)
   if (NOT_A_LANDMARK.test(label)) return false
