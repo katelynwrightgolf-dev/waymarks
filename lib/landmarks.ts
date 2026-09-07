@@ -244,14 +244,24 @@ async function fetchOverpassHistoric(
   // history-related `board_type` rather than a bare `information=board` — a
   // plain board is just as likely to be a trail map or transit timetable, which
   // would pollute the list with things that aren't historical markers at all.
+  // Note we deliberately DON'T require [name] on the marker-like queries: real
+  // roadside markers frequently carry no name tag at all — their text lives in
+  // `inscription`. Those are recovered below by using the inscription as the
+  // display name, instead of being silently dropped.
   const query =
     `[out:json][timeout:25];(` +
     `nwr[historic][name](${bbox});` +
-    `nwr[man_made=plaque][name](${bbox});` +
-    `nwr[tourism=information][information~"^(history|plaque)$"][name](${bbox});` +
-    `nwr[tourism=information][board_type~"^(history|historic)"][name](${bbox});` +
-    `nwr[memorial~"^(statue|bust|plaque|stele|stone|obelisk)$"][name](${bbox});` +
-    `);out center tags 400;`
+    `nwr[historic=memorial](${bbox});` +
+    `nwr[historic=monument](${bbox});` +
+    `nwr[historic=ruins](${bbox});` +
+    `nwr[historic=archaeological_site](${bbox});` +
+    `nwr[historic=wayside_shrine](${bbox});` +
+    `nwr[historic=boundary_stone](${bbox});` +
+    `nwr[man_made=plaque](${bbox});` +
+    `nwr[memorial](${bbox});` +
+    `nwr[tourism=information][information~"^(history|plaque)$"](${bbox});` +
+    `nwr[tourism=information][board_type~"^(history|historic)"](${bbox});` +
+    `);out center tags 500;`
 
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 14000)
@@ -274,10 +284,17 @@ async function fetchOverpassHistoric(
     const elements = data.elements ?? []
     const out: Landmark[] = []
     for (const el of elements) {
-      const name = el.tags?.name
       const plat = el.lat ?? el.center?.lat
       const plng = el.lon ?? el.center?.lon
-      if (!name || plat == null || plng == null) continue
+      if (plat == null || plng == null) continue
+      const inscriptionText = el.tags?.inscription ?? el.tags?.description
+      // A named object uses its name; an unnamed marker falls back to its
+      // inscription (truncated) so it's still loggable. Objects with neither a
+      // name nor any text are skipped — a blank "historic thing" isn't useful.
+      const name =
+        el.tags?.name ??
+        (inscriptionText ? inscriptionText.replace(/\s+/g, " ").trim().slice(0, 70) : null)
+      if (!name) continue
       const dist = haversine(lat, lng, plat, plng)
       // bbox is a square; drop corners that fall outside the requested circle.
       if (dist > radius) continue

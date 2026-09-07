@@ -3,7 +3,7 @@
 import { checkIn, deleteVisit, getVisits, updateNote } from "@/app/actions/visits"
 import type { Visit } from "@/lib/db/schema"
 import type { Landmark } from "@/lib/landmarks"
-import { AlertTriangle, Compass, Loader2, LocateFixed, MapPin, Search, X } from "lucide-react"
+import { AlertTriangle, Check, Compass, Loader2, LocateFixed, MapPin, Plus, Search, X } from "lucide-react"
 import dynamic from "next/dynamic"
 import { type FormEvent, useCallback, useMemo, useRef, useState } from "react"
 import { NearbyList } from "./nearby-list"
@@ -54,6 +54,12 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [pendingId, setPendingId] = useState<string | null>(null)
   const [who, setWho] = useState("Us")
+  // Manual "log a marker I'm standing at" entry, for official markers that no
+  // dataset (Wikipedia/OSM) knows about.
+  const [addingMarker, setAddingMarker] = useState(false)
+  const [markerName, setMarkerName] = useState("")
+  const [markerNote, setMarkerNote] = useState("")
+  const [savingMarker, setSavingMarker] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
 
   const visitedIds = useMemo(() => new Set(visits.map((v) => v.landmarkId)), [visits])
@@ -250,6 +256,39 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
     },
     [who],
   )
+
+  // Log a marker by hand at the current location. Uses a unique id so it never
+  // collides with a dataset landmark, and pins it to wherever the user is now.
+  const handleManualCheckIn = useCallback(async () => {
+    if (!position) return
+    const name = markerName.trim()
+    if (!name) return
+    setSavingMarker(true)
+    try {
+      await checkIn({
+        landmarkId: `manual/${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        name,
+        category: "Historical marker",
+        description: null,
+        lat: position.lat,
+        lng: position.lng,
+        note: markerNote.trim() || null,
+        wikipedia: null,
+        imageUrl: null,
+        visitedBy: who,
+      })
+      const fresh = await getVisits()
+      setVisits(fresh)
+      setMarkerName("")
+      setMarkerNote("")
+      setAddingMarker(false)
+      setTab("visited")
+    } catch {
+      setLandmarkError("Couldn't save that marker. Please try again.")
+    } finally {
+      setSavingMarker(false)
+    }
+  }, [position, markerName, markerNote, who])
 
   const handleDelete = useCallback(async (id: number) => {
     setVisits((prev) => prev.filter((v) => v.id !== id))
@@ -600,6 +639,75 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
                 ) : null}
               </div>
             ) : null}
+
+            {/* Escape hatch for the many official roadside markers that aren't
+                in Wikipedia or OpenStreetMap: log the one in front of you by
+                hand, pinned to your current location. */}
+            <div className="flex flex-col gap-3 rounded-2xl border border-dashed border-border p-4">
+              <div>
+                <p className="text-sm font-semibold text-card-foreground">
+                  Standing at a marker that isn&apos;t listed?
+                </p>
+                <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+                  Official roadside markers often aren&apos;t in any map database. Log the one in front of you at your
+                  current location.
+                </p>
+              </div>
+
+              {addingMarker ? (
+                <div className="flex flex-col gap-2">
+                  <input
+                    value={markerName}
+                    onChange={(e) => setMarkerName(e.target.value)}
+                    placeholder="What the marker says or commemorates"
+                    aria-label="Marker name"
+                    className="min-h-12 w-full rounded-xl border border-border bg-background px-3 text-base text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none"
+                  />
+                  <textarea
+                    value={markerNote}
+                    onChange={(e) => setMarkerNote(e.target.value)}
+                    placeholder="Add a note (optional)"
+                    aria-label="Note about this marker"
+                    rows={2}
+                    className="w-full rounded-xl border border-border bg-background p-3 text-base leading-relaxed text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none"
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setAddingMarker(false)}
+                      className="min-h-11 flex-1 rounded-full border border-border px-4 text-sm font-semibold text-foreground transition-colors hover:bg-muted"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleManualCheckIn()}
+                      disabled={savingMarker || !markerName.trim()}
+                      className="inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-full bg-primary px-4 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-60"
+                    >
+                      {savingMarker ? (
+                        <Loader2 className="size-4 animate-spin" aria-hidden />
+                      ) : (
+                        <Check className="size-4" aria-hidden />
+                      )}
+                      Log this marker
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMarkerName(listQuery.trim())
+                    setAddingMarker(true)
+                  }}
+                  className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full border border-primary px-4 text-sm font-semibold text-primary transition-colors hover:bg-primary/10"
+                >
+                  <Plus className="size-4" aria-hidden />
+                  Add a marker here
+                </button>
+              )}
+            </div>
           </div>
         )
       ) : (
