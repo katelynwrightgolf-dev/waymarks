@@ -48,7 +48,7 @@ const HISTORIC_SIGNAL =
 // A formal heritage designation — strong enough to rescue an otherwise modern
 // institution from being filtered out.
 const STRONG_HISTORIC =
-  /\b(national register of historic places|national historic landmark|historic district|historic site|listed on the national register|heritage (register|site)|historical society)\b/i
+  /\b(national register of historic places|national historic landmark|historic district|historic site|united states historic place|listed on the national register|heritage (register|site)|historical society)\b/i
 
 // Commemorative works — a statue, bust, or monument exists specifically to
 // remember a person or event, so it always belongs in this list even when the
@@ -78,6 +78,30 @@ const MODERN_ART =
 const PERIOD_CUE =
   /\b((1[5-8]\d\d|19[0-2]\d)s?|(16|17|18|19)th[- ]century|antebellum|victorian|colonial|pioneer|frontier)\b/i
 
+// K-12 schools — the everyday local schools users most want gone. Kept ONLY
+// when formally registered. The pre-1940 allowance is deliberately NOT extended
+// here: a modern school's article routinely recounts a long-demolished
+// predecessor building ("a building was erected in 1904"), which would wrongly
+// keep the modern campus. Excludes "schoolhouse"/"one-room school", which are
+// historic by nature and handled by HISTORIC_SIGNAL.
+const K12_SCHOOL =
+  /\b(high school|middle school|elementary school|primary school|secondary school|grammar school|junior high|school district|charter school|private school|public school|prep school)\b/i
+
+// Higher-ed and campus buildings. These are kept when registered OR when the
+// building itself predates ~1940 — old university halls are a legitimate part
+// of a historic-landmarks list in a way a modern K-12 campus isn't.
+const CAMPUS =
+  /\b(community college|university|college|campus|academy)\b/i
+
+// A pre-1940 BUILDING date. `19[0-3]\d` covers 1900–1939, `1[5-8]\d\d` covers
+// 1500–1899. Anchored strictly to physical-construction verbs — deliberately
+// NOT "established"/"founded", which describe when an institution began rather
+// than when its building went up. That distinction is what stops a modern
+// high-school campus ("established in 1889") from being kept as if it were an
+// old building.
+const PRE_1940_STRUCTURE =
+  /\b(built|constructed|erected|completed|rebuilt|opened|dedicated|dating from|dates? (?:from|to|back to)|circa|c\.)\s+(?:in\s+)?(1[5-8]\d\d|19[0-3]\d)\b/i
+
 // Broadcast stations (AM/FM radio, TV). Wikipedia titles these by bare callsign
 // ("KGDC", "KTEL (AM)") and often describes them only in the article body, so
 // the name+description MODERN_NOISE check can miss them. This is matched against
@@ -106,6 +130,11 @@ function isHistoricPlace(name: string, shortDesc?: string, extract?: string): bo
   // Not an individual site at all -> never a landmark, even if it cites old
   // dates. (Towns are handled before this function is ever called.)
   if (NOT_A_LANDMARK.test(label)) return false
+  // K-12 school: keep only if formally registered (no pre-1940 allowance — see
+  // K12_SCHOOL). Higher-ed / campus: registered OR a pre-1940 building. Both run
+  // before the general MODERN_NOISE rule so they own the school decision.
+  if (K12_SCHOOL.test(label)) return STRONG_HISTORIC.test(haystack)
+  if (CAMPUS.test(label)) return STRONG_HISTORIC.test(haystack) || PRE_1940_STRUCTURE.test(haystack)
   // Modern institution? Require a formal heritage designation to keep it. This
   // runs first so "Memorial Hospital" / "Memorial Stadium" don't sneak in via
   // the commemorative check below.
@@ -298,6 +327,20 @@ async function fetchOverpassHistoric(
       const dist = haversine(lat, lng, plat, plng)
       // bbox is a square; drop corners that fall outside the requested circle.
       if (dist > radius) continue
+      // Apply the same school/broadcast exclusions the Wikipedia path uses, but
+      // judge them on the REAL OSM text (name + inscription/description), never
+      // the synthetic category we assign below — otherwise our own "Historic
+      // site" label would falsely satisfy the heritage rescue. OSM's own
+      // start_date tag provides the pre-1940 test.
+      const osmText = `${name} ${el.tags?.inscription ?? ""} ${el.tags?.description ?? ""}`
+      const startYear = Number.parseInt(el.tags?.start_date ?? el.tags?.year_of_construction ?? "", 10)
+      const osmPre1940 = Number.isFinite(startYear) && startYear > 0 && startYear < 1940
+      if (BROADCAST.test(osmText)) continue
+      // K-12 schools out entirely; campus buildings only with a pre-1940 OSM
+      // start_date. (OSM rarely carries NRHP text, so registration can't rescue
+      // here — the start_date tag is the reliable signal.)
+      if (K12_SCHOOL.test(osmText)) continue
+      if (CAMPUS.test(osmText) && !osmPre1940) continue
       const historic = el.tags?.historic
       const memorial = el.tags?.memorial
       const artwork = el.tags?.artwork_type
