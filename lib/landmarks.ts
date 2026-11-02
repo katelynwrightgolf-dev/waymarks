@@ -248,6 +248,100 @@ type OverpassElement = {
   tags?: Record<string, string>
 }
 
+type NpsFeature = {
+  attributes?: {
+    NRIS_Refnum?: string
+    RESNAME?: string
+    ResType?: string
+    Address?: string
+    City?: string
+    County?: string
+    State?: string
+    CertDate?: string
+    SOURCE?: string
+  }
+  geometry?: { x?: number; y?: number; rings?: number[][][] }
+}
+
+// Official National Register of Historic Places data from the National Park
+// Service. This is the source that catches registered sites with no Wikipedia
+// article and no useful OpenStreetMap historic tag.
+async function fetchNearbyNationalRegister(
+  lat: number,
+  lng: number,
+  radiusMeters: number,
+): Promise<Landmark[]> {
+  const radius = Math.min(Math.max(Math.round(radiusMeters), 100), 20000)
+  const dLat = radius / 111320
+  const dLng = radius / (111320 * Math.cos((lat * Math.PI) / 180))
+  const geometry = `${lng - dLng},${lat - dLat},${lng + dLng},${lat + dLat}`
+  const base = "https://mapservices.nps.gov/arcgis/rest/services/cultural_resources/nrhp_locations/MapServer"
+  const params = new URLSearchParams({
+    f: "json",
+    geometry,
+    geometryType: "esriGeometryEnvelope",
+    spatialRel: "esriSpatialRelIntersects",
+    outFields: "*",
+    returnGeometry: "true",
+    outSR: "4326",
+    resultRecordCount: "500",
+  })
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 10000)
+  try {
+    const responses = await Promise.all(
+      [0, 1].map((layer) => fetch(`${base}/${layer}/query?${params}`, { signal: controller.signal }).then((r) => r.json())),
+    )
+    const output: Landmark[] = []
+    const seen = new Set<string>()
+    for (const data of responses) {
+      for (const feature of (data.features ?? []) as NpsFeature[]) {
+        const attr = feature.attributes ?? {}
+        const name = attr.RESNAME?.trim()
+        const geometryData = feature.geometry
+        let plat = geometryData?.y
+        let plng = geometryData?.x
+        if (plat == null || plng == null) {
+          const points = geometryData?.rings?.flat() ?? []
+          if (points.length === 0) continue
+          plng = points.reduce((sum, point) => sum + point[0], 0) / points.length
+          plat = points.reduce((sum, point) => sum + point[1], 0) / points.length
+        }
+        if (!name || plat == null || plng == null) continue
+        const distance = haversine(lat, lng, plat, plng)
+        if (distance > radius * 1.05) continue
+        const id = `nrhp/${attr.NRIS_Refnum ?? name}`
+        const key = normalizeName(name)
+        if (seen.has(key)) continue
+        seen.add(key)
+        const date = attr.CertDate?.slice(0, 4)
+        output.push({
+          id,
+          name,
+          category: attr.ResType === "district" ? "National Register historic district" : "National Register historic place",
+          kind: "landmark",
+          lat: plat,
+          lng: plng,
+          description: [
+            "Listed on the National Register of Historic Places by the National Park Service.",
+            attr.City || attr.County ? [attr.City, attr.County && `${attr.County} County`, attr.State].filter(Boolean).join(", ") : null,
+            date ? `Listed in ${date}.` : null,
+            attr.Address || null,
+          ].filter(Boolean).join(" "),
+          wikipedia: null,
+          imageUrl: null,
+          distanceMeters: distance,
+        })
+      }
+    }
+    return output
+  } catch {
+    return []
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 // Lightweight cemetery fallback. Rural cemeteries are often mapped in OSM but
 // the broad Overpass history query can time out before returning them.
 async function fetchNearbyCemeteries(lat: number, lng: number, radiusMeters: number): Promise<Landmark[]> {
@@ -456,7 +550,7 @@ export async function fetchNearbyLandmarks(
   //  1. Wikipedia GeoSearch — notable places with rich descriptions + photos.
   //  2. OpenStreetMap historic sites — catches memorials, monuments, markers
   //     and historic buildings that lack a Wikipedia article.
-  const [geo, osmHistoric, cemeteries] = await Promise.all([
+  const [geo, osmHistoric, cemeteries, nationalRegister] = await Promise.all([
     wikiFetch({
       action: "query",
       list: "geosearch",
@@ -468,6 +562,7 @@ export async function fetchNearbyLandmarks(
     }).catch(() => null),
     fetchOverpassHistoric(lat, lng, radiusMeters),
     fetchNearbyCemeteries(lat, lng, radiusMeters),
+    fetchNearbyNationalRegister(lat, lng, radiusMeters),
   ])
 
   const results: GeoSearchResult[] = geo?.query?.geosearch ?? []
@@ -543,7 +638,7 @@ export async function fetchNearbyLandmarks(
   // Merge in OSM historic sites, skipping any that duplicate a Wikipedia entry
   // (same normalized name, or already linked to a Wikipedia article).
   const seen = new Set(wikiLandmarks.map((l) => normalizeName(l.name)))
-  const extraHistoric = [...osmHistoric, ...cemeteries].filter((l) => {
+  const extraHistoric = [...nationalRegister, ...osmHistoric, ...cemeteries].filter((l) => {
     const key = normalizeName(l.name)
     if (seen.has(key) || l.wikipedia) return false
     seen.add(key)
@@ -562,12 +657,16 @@ export async function fetchNearbyLandmarks(
   // Keep every town (relatively rare, and the whole point of the Towns filter)
   // plus the nearest individual landmarks, so towns are never trimmed away.
   const towns = within.filter((l) => l.kind === "town")
+  // Never trim official National Register properties: they are the highest-
+  // confidence source and the user's explicit request. Other historic sources
+  // remain capped so a dense city cannot overwhelm the response.
+  const officialNationalRegister = within.filter((l) => l.id.startsWith("nrhp/"))
   const nearestLandmarks = within
-    .filter((l) => l.kind === "landmark")
+    .filter((l) => l.kind === "landmark" && !l.id.startsWith("nrhp/"))
     .sort((a, b) => (a.distanceMeters ?? 0) - (b.distanceMeters ?? 0))
     .slice(0, 150)
 
-  return [...towns, ...nearestLandmarks].sort(
+  return [...towns, ...officialNationalRegister, ...nearestLandmarks].sort(
     (a, b) => (a.distanceMeters ?? 0) - (b.distanceMeters ?? 0),
   )
 }
