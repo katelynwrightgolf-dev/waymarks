@@ -248,6 +248,59 @@ type OverpassElement = {
   tags?: Record<string, string>
 }
 
+// Lightweight cemetery fallback. Rural cemeteries are often mapped in OSM but
+// the broad Overpass history query can time out before returning them.
+async function fetchNearbyCemeteries(lat: number, lng: number, radiusMeters: number): Promise<Landmark[]> {
+  const radius = Math.min(Math.max(Math.round(radiusMeters), 100), 16000)
+  const dLat = radius / 111320
+  const dLng = radius / (111320 * Math.cos((lat * Math.PI) / 180))
+  const viewbox = `${lng - dLng},${lat + dLat},${lng + dLng},${lat - dLat}`
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 8000)
+  try {
+    const url = "https://nominatim.openstreetmap.org/search?" + new URLSearchParams({
+      q: "cemetery",
+      format: "json",
+      addressdetails: "1",
+      limit: "50",
+      bounded: "1",
+      viewbox,
+      countrycodes: "us",
+    })
+    const res = await fetch(url, {
+      headers: { "User-Agent": "Waymarks/1.0 (historic landmark tracker)", Accept: "application/json" },
+      signal: controller.signal,
+      next: { revalidate: 300 },
+    })
+    if (!res.ok) return []
+    const rows = (await res.json()) as Array<{ lat: string; lon: string; display_name: string; name?: string; type?: string }>
+    return rows.flatMap((row, index) => {
+      const plat = Number.parseFloat(row.lat)
+      const plng = Number.parseFloat(row.lon)
+      if (!Number.isFinite(plat) || !Number.isFinite(plng)) return []
+      const dist = haversine(lat, lng, plat, plng)
+      if (dist > radius) return []
+      const name = row.name || row.display_name.split(",")[0] || `Cemetery ${index + 1}`
+      return [{
+        id: `nominatim-cemetery/${plat}/${plng}`,
+        name,
+        category: "Historic cemetery",
+        kind: "landmark" as const,
+        lat: plat,
+        lng: plng,
+        description: "Cemetery and historic burial ground mapped in OpenStreetMap.",
+        wikipedia: null,
+        imageUrl: null,
+        distanceMeters: dist,
+      }]
+    })
+  } catch {
+    return []
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 // Supplementary source: OpenStreetMap historic sites (memorials, monuments,
 // ruins, historic buildings, markers). These catch many named historic places
 // that don't have their own Wikipedia article, so downtown coverage is far
@@ -286,6 +339,8 @@ async function fetchOverpassHistoric(
     `nwr[historic=archaeological_site](${bbox});` +
     `nwr[historic=wayside_shrine](${bbox});` +
     `nwr[historic=boundary_stone](${bbox});` +
+    `nwr[historic=cemetery](${bbox});` +
+    `nwr[landuse=cemetery][name](${bbox});` +
     `nwr[man_made=plaque](${bbox});` +
     `nwr[memorial](${bbox});` +
     `nwr[tourism=information][information~"^(history|plaque)$"](${bbox});` +
@@ -344,6 +399,7 @@ async function fetchOverpassHistoric(
       const historic = el.tags?.historic
       const memorial = el.tags?.memorial
       const artwork = el.tags?.artwork_type
+      const isCemetery = historic === "cemetery" || el.tags?.landuse === "cemetery"
       // A genuine roadside marker: a plaque or a dedicated history board.
       const isMarker =
         el.tags?.man_made === "plaque" ||
@@ -357,13 +413,15 @@ async function fetchOverpassHistoric(
         memorial === "obelisk" ||
         artwork === "statue" ||
         artwork === "bust"
-      const category = isMarker
-        ? "Historical marker"
-        : isStatue
-          ? "Statue or monument"
-          : historic && historic !== "yes"
-            ? `Historic ${historic.replace(/_/g, " ")}`.replace(/\b\w/, (c) => c.toUpperCase())
-            : "Historic site"
+      const category = isCemetery
+        ? "Historic cemetery"
+        : isMarker
+          ? "Historical marker"
+          : isStatue
+            ? "Statue or monument"
+            : historic && historic !== "yes"
+              ? `Historic ${historic.replace(/_/g, " ")}`.replace(/\b\w/, (c) => c.toUpperCase())
+              : "Historic site"
       out.push({
         id: `osm/${el.type}/${el.id}`,
         name,
@@ -398,7 +456,7 @@ export async function fetchNearbyLandmarks(
   //  1. Wikipedia GeoSearch — notable places with rich descriptions + photos.
   //  2. OpenStreetMap historic sites — catches memorials, monuments, markers
   //     and historic buildings that lack a Wikipedia article.
-  const [geo, osmHistoric] = await Promise.all([
+  const [geo, osmHistoric, cemeteries] = await Promise.all([
     wikiFetch({
       action: "query",
       list: "geosearch",
@@ -409,6 +467,7 @@ export async function fetchNearbyLandmarks(
       gslimit: "500",
     }).catch(() => null),
     fetchOverpassHistoric(lat, lng, radiusMeters),
+    fetchNearbyCemeteries(lat, lng, radiusMeters),
   ])
 
   const results: GeoSearchResult[] = geo?.query?.geosearch ?? []
@@ -484,7 +543,7 @@ export async function fetchNearbyLandmarks(
   // Merge in OSM historic sites, skipping any that duplicate a Wikipedia entry
   // (same normalized name, or already linked to a Wikipedia article).
   const seen = new Set(wikiLandmarks.map((l) => normalizeName(l.name)))
-  const extraHistoric = osmHistoric.filter((l) => {
+  const extraHistoric = [...osmHistoric, ...cemeteries].filter((l) => {
     const key = normalizeName(l.name)
     if (seen.has(key) || l.wikipedia) return false
     seen.add(key)
