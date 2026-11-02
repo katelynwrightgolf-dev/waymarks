@@ -204,26 +204,3 @@ export async function searchPlaces(
   hits.sort((a, b) => a.score - b.score)
   return hits.slice(0, limit).map(({ i }) => toLandmark(index, i, near ?? undefined))
 }
-
-const normalizeName = (name: string) => fold(name.replace(/^the\s+/i, ""))
-
-/**
- * Add stored places to a list from the live sources, skipping any that are
- * already there: same id (the live National Register lookup uses the same
- * "nrhp/<ref>" ids), or the same name within ~300 m (e.g. an OpenStreetMap
- * marker that is the same Texas marker).
- */
-export function mergePlaces(live: Landmark[], local: Landmark[]): Landmark[] {
-  const ids = new Set(live.map((l) => l.id))
-  const byName = new Map<string, Landmark[]>()
-  for (const l of live) {
-    const key = normalizeName(l.name)
-    byName.set(key, [...(byName.get(key) ?? []), l])
-  }
-  const extra = local.filter((p) => {
-    if (ids.has(p.id)) return false
-    const twins = byName.get(normalizeName(p.name)) ?? []
-    return !twins.some((t) => haversine(t.lat, t.lng, p.lat, p.lng) < 300)
-  })
-  return [...live, ...extra].sort((a, b) => (a.distanceMeters ?? 0) - (b.distanceMeters ?? 0))
-}

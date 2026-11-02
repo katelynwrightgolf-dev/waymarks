@@ -14,7 +14,7 @@ import {
   updateQueuedNote,
   withPending,
 } from "@/lib/offline-visits"
-import { loadPlaces, mergePlaces, nearbyPlaces, searchPlaces } from "@/lib/places"
+import { loadPlaces, nearbyPlaces, searchPlaces } from "@/lib/places"
 import { PLACES_COUNT } from "@/lib/places-manifest"
 import {
   AlertTriangle,
@@ -72,7 +72,6 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
   const [loadingLandmarks, setLoadingLandmarks] = useState(false)
   const [landmarkError, setLandmarkError] = useState<string | null>(null)
   const [tab, setTab] = useState<"nearby" | "visited">("nearby")
-  const [kindFilter, setKindFilter] = useState<"all" | "landmark" | "town">("all")
   const [listQuery, setListQuery] = useState("")
   const [nameResults, setNameResults] = useState<Landmark[]>([])
   const [nameSearching, setNameSearching] = useState(false)
@@ -92,22 +91,9 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
   const [toast, setToast] = useState<
     { kind: "logged"; visitId: number; name: string; offline: boolean } | { kind: "notice"; text: string } | null
   >(null)
-  // The nearby list came from the on-phone database only (no signal).
-  const [offlineResults, setOfflineResults] = useState(false)
   // Offline places database: is it stored on this phone yet?
   const [placesStatus, setPlacesStatus] = useState<"loading" | "ready" | "missing">("loading")
   const [pendingCount, setPendingCount] = useState(0)
-  const [online, setOnline] = useState(true)
-  useEffect(() => {
-    const update = () => setOnline(navigator.onLine)
-    update()
-    window.addEventListener("online", update)
-    window.addEventListener("offline", update)
-    return () => {
-      window.removeEventListener("online", update)
-      window.removeEventListener("offline", update)
-    }
-  }, [])
   const searchRef = useRef<HTMLInputElement>(null)
   // Ignore results from a superseded nearby lookup (location/radius changed).
   const loadSeq = useRef(0)
@@ -200,18 +186,12 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
     return out
   }, [visits])
 
-  // Split results into towns vs. individual landmarks so we can filter/count.
-  const townCount = useMemo(() => landmarks.filter((l) => l.kind === "town").length, [landmarks])
-  const landmarkCount = landmarks.length - townCount
   const filteredLandmarks = useMemo(() => {
-    const byKind = kindFilter === "all" ? landmarks : landmarks.filter((l) => l.kind === kindFilter)
     const q = listQuery.trim().toLowerCase()
-    if (!q) return byKind
-    // Free-text search across name, category and description of found places.
-    return byKind.filter((l) =>
-      [l.name, l.category, l.description].some((field) => field?.toLowerCase().includes(q)),
-    )
-  }, [landmarks, kindFilter, listQuery])
+    if (!q) return landmarks
+    // Free-text filter on the names of the places found nearby.
+    return landmarks.filter((l) => l.name.toLowerCase().includes(q))
+  }, [landmarks, listQuery])
 
   // Stable [lat, lng] reference so the map only recenters when we actually move.
   const mapCenter = useMemo<[number, number] | null>(
@@ -219,46 +199,27 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
     [position],
   )
 
-  // Nearby places come from two places at once: the live sources (Wikipedia,
-  // OpenStreetMap, NPS — needs signal) and the on-phone database of National
-  // Register sites and Texas markers (always works). Live results show as soon
-  // as they arrive; on-phone ones are merged in without duplicates.
+  // Nearby places are National Register of Historic Places listings and
+  // official Texas historical markers only, from the database stored on the
+  // phone (lib/places.ts), so the list is the same with or without signal.
   const loadLandmarks = useCallback(async (lat: number, lng: number, r: number) => {
     const seq = ++loadSeq.current
     setLoadingLandmarks(true)
     setLandmarkError(null)
-    setOfflineResults(false)
-    const localPromise = nearbyPlaces(lat, lng, r).catch(() => null)
-    let live: Landmark[] | null = null
-    let liveError = "Something went wrong"
-    if (navigator.onLine) {
-      try {
-        const res = await fetch(`/api/landmarks?lat=${lat}&lng=${lng}&radius=${r}`)
-        const data = await res.json()
-        if (!res.ok) throw new Error(data.error || "Failed to load landmarks")
-        live = data.landmarks as Landmark[]
-      } catch (err) {
-        liveError = err instanceof Error ? err.message : liveError
-      }
-    }
-    if (seq !== loadSeq.current) return
-    if (live) {
-      setLandmarks(live)
-      setLoadingLandmarks(false)
-      const local = await localPromise
-      if (seq === loadSeq.current && local?.length) setLandmarks(mergePlaces(live, local))
-      return
-    }
-    const local = await localPromise
-    if (seq !== loadSeq.current) return
-    if (local) {
-      setLandmarks(local)
-      setOfflineResults(true)
-    } else {
-      setLandmarkError(liveError)
+    try {
+      const places = await nearbyPlaces(lat, lng, r)
+      if (seq === loadSeq.current) setLandmarks(places)
+    } catch {
+      if (seq !== loadSeq.current) return
       setLandmarks([])
+      setLandmarkError(
+        navigator.onLine
+          ? "Couldn't load the historic places list. Please try again."
+          : "The historic places list isn't on this phone yet. Open Waymarks once with a signal to save it.",
+      )
+    } finally {
+      if (seq === loadSeq.current) setLoadingLandmarks(false)
     }
-    setLoadingLandmarks(false)
   }, [])
 
   // Set the active location (from GPS or a manual search) and immediately load
@@ -363,37 +324,20 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
     [position, loadLandmarks],
   )
 
-  // Search by NAME for a specific landmark (anywhere), so you can log a place
-  // you're walking past even if it wasn't in the nearby list. Searches the
-  // on-phone National Register + Texas marker database (works offline) and,
-  // with signal, Wikipedia too.
+  // Search by NAME for a specific National Register site or Texas marker
+  // anywhere, so you can log one even if it isn't in the nearby list.
   const searchByName = useCallback(async () => {
     const q = listQuery.trim()
     if (!q) return
     setNameSearching(true)
     setNameSearchedFor(q)
-    const localPromise = searchPlaces(q, position).catch(() => [] as Landmark[])
-    let live: Landmark[] = []
-    if (navigator.onLine) {
-      try {
-        const params = new URLSearchParams({ q })
-        if (position) {
-          params.set("lat", String(position.lat))
-          params.set("lng", String(position.lng))
-        }
-        const res = await fetch(`/api/landmark-search?${params.toString()}`)
-        const data = await res.json()
-        live = (data.landmarks as Landmark[]) ?? []
-      } catch {
-        live = []
-      }
+    try {
+      setNameResults(await searchPlaces(q, position))
+    } catch {
+      setNameResults([])
+    } finally {
+      setNameSearching(false)
     }
-    const local = await localPromise
-    // Official places (exact matches for what's on the sign) lead; Wikipedia's
-    // looser full-text matches follow.
-    const merged = mergePlaces(local, live)
-    setNameResults(position ? merged : [...local, ...merged.filter((l) => !local.includes(l))])
-    setNameSearching(false)
   }, [listQuery, position])
 
   const clearNameSearch = useCallback(() => {
@@ -808,36 +752,6 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
                 </button>
               ) : null}
             </form>
-            <div className="flex gap-2">
-              {(
-                [
-                  { key: "all", label: `All (${landmarks.length})` },
-                  { key: "landmark", label: `Historic (${landmarkCount})` },
-                  { key: "town", label: `Towns (${townCount})` },
-                ] as const
-              ).map((opt) => (
-                <button
-                  key={opt.key}
-                  type="button"
-                  onClick={() => setKindFilter(opt.key)}
-                  className={`min-h-10 flex-1 rounded-full border px-3 text-sm font-semibold transition-colors ${
-                    kindFilter === opt.key
-                      ? "border-primary bg-primary/10 text-primary"
-                      : "border-border text-muted-foreground hover:bg-muted"
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-            {offlineResults ? (
-              <p className="flex items-start gap-2 rounded-2xl bg-accent/20 p-3 text-sm leading-relaxed text-accent-foreground">
-                <CloudOff className="mt-0.5 size-4 shrink-0" aria-hidden />
-                {online
-                  ? "Couldn't reach the live sources, so these are the National Register sites and Texas markers saved on your phone."
-                  : "No signal — showing National Register sites and Texas markers saved on your phone."}
-              </p>
-            ) : null}
             {filteredLandmarks.length === 0 && listQuery.trim() ? (
               <p className="rounded-2xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
                 Nothing nearby matches &ldquo;{listQuery.trim()}&rdquo;.
@@ -858,8 +772,8 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
             {listQuery.trim() ? (
               <div className="flex flex-col gap-3 rounded-2xl border border-border bg-muted/40 p-4">
                 <p className="text-sm leading-relaxed text-muted-foreground">
-                  Walking past a specific landmark that isn&apos;t listed? Search every National Register site and
-                  Texas historical marker by name{online ? ", plus Wikipedia," : ""} and log it directly.
+                  Not in the list? Search every National Register site and Texas historical marker by name and log it
+                  directly.
                 </p>
                 <button
                   type="button"

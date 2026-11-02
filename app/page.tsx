@@ -33,8 +33,7 @@ export default async function HomePage() {
       <LandmarkTracker initialVisits={initialVisits} />
 
       <footer className="mt-10 text-center text-xs text-muted-foreground">
-        Landmark data from OpenStreetMap contributors, Wikipedia, the National Park Service, and the Texas Historical
-        Commission
+        Historic places from the National Park Service&apos;s National Register and the Texas Historical Commission
       </footer>
     </main>
   )
