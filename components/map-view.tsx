@@ -83,6 +83,9 @@ export default function MapView({
     // get a warm tint in globals.css (.waymarks-map) to match the app.
     L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 19,
+      // CORS tiles can be kept by the service worker for offline use (opaque
+      // ones would eat the browser's storage quota). OSM allows any origin.
+      crossOrigin: true,
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
     }).addTo(map)
 

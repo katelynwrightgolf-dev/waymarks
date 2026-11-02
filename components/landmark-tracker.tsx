@@ -1,13 +1,27 @@
 "use client"
 
-import { checkIn, deleteVisit, getVisits, updateNote } from "@/app/actions/visits"
+import { type CheckInInput, checkIn, deleteVisit, getVisits, updateNote } from "@/app/actions/visits"
 import type { Visit } from "@/lib/db/schema"
 import type { Landmark } from "@/lib/landmarks"
+import {
+  enqueueCheckIn,
+  isNetworkError,
+  pendingToVisit,
+  readQueue,
+  readVisitsCopy,
+  removeQueued,
+  saveVisitsCopy,
+  updateQueuedNote,
+  withPending,
+} from "@/lib/offline-visits"
+import { loadPlaces, mergePlaces, nearbyPlaces, searchPlaces } from "@/lib/places"
+import { PLACES_COUNT } from "@/lib/places-manifest"
 import {
   AlertTriangle,
   Check,
   CheckCircle2,
   ChevronDown,
+  CloudOff,
   Compass,
   Loader2,
   LocateFixed,
@@ -74,9 +88,91 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
   const [savingMarker, setSavingMarker] = useState(false)
   // Re-open the full "Where are you?" card after a location is set.
   const [editingLocation, setEditingLocation] = useState(false)
-  // "Logged ✓ — Undo" confirmation after a check-in.
-  const [toast, setToast] = useState<{ visitId: number; name: string } | null>(null)
+  // "Logged ✓ — Undo" after a check-in, or a short notice.
+  const [toast, setToast] = useState<
+    { kind: "logged"; visitId: number; name: string; offline: boolean } | { kind: "notice"; text: string } | null
+  >(null)
+  // The nearby list came from the on-phone database only (no signal).
+  const [offlineResults, setOfflineResults] = useState(false)
+  // Offline places database: is it stored on this phone yet?
+  const [placesStatus, setPlacesStatus] = useState<"loading" | "ready" | "missing">("loading")
+  const [pendingCount, setPendingCount] = useState(0)
+  const [online, setOnline] = useState(true)
+  useEffect(() => {
+    const update = () => setOnline(navigator.onLine)
+    update()
+    window.addEventListener("online", update)
+    window.addEventListener("offline", update)
+    return () => {
+      window.removeEventListener("online", update)
+      window.removeEventListener("offline", update)
+    }
+  }, [])
   const searchRef = useRef<HTMLInputElement>(null)
+  // Ignore results from a superseded nearby lookup (location/radius changed).
+  const loadSeq = useRef(0)
+  const syncing = useRef(false)
+
+  // Keep a copy of the log on the phone, and fold in check-ins still waiting
+  // to sync. When the app was opened with no signal, the page itself may be an
+  // older saved copy, so prefer the phone's newer copy of the log.
+  useEffect(() => {
+    const saved = !navigator.onLine ? readVisitsCopy() : null
+    setVisits((prev) => withPending(saved ?? prev))
+    setPendingCount(readQueue().length)
+  }, [])
+  useEffect(() => {
+    saveVisitsCopy(visits)
+  }, [visits])
+
+  // Download the places database the first time (and keep it), so nearby
+  // places work later with no service.
+  useEffect(() => {
+    loadPlaces()
+      .then(() => setPlacesStatus("ready"))
+      .catch(() => setPlacesStatus("missing"))
+  }, [])
+
+  // Send check-ins saved offline once there's a connection again.
+  const syncPending = useCallback(async () => {
+    if (syncing.current || !navigator.onLine) return
+    const queue = readQueue()
+    if (!queue.length) return
+    syncing.current = true
+    let sent = 0
+    try {
+      for (const item of queue) {
+        try {
+          await checkIn(item.input)
+          removeQueued(item.tempId)
+          sent++
+        } catch (err) {
+          if (isNetworkError(err)) break
+          // The server rejected it outright; drop it rather than retry forever.
+          removeQueued(item.tempId)
+        }
+      }
+      if (sent) setVisits(withPending(await getVisits()))
+    } catch {
+      // Lost signal mid-sync; the rest stays queued for next time.
+    } finally {
+      syncing.current = false
+      setPendingCount(readQueue().length)
+    }
+  }, [])
+
+  useEffect(() => {
+    void syncPending()
+    const onVisible = () => document.visibilityState === "visible" && void syncPending()
+    window.addEventListener("online", syncPending)
+    document.addEventListener("visibilitychange", onVisible)
+    const timer = setInterval(() => void syncPending(), 30_000)
+    return () => {
+      window.removeEventListener("online", syncPending)
+      document.removeEventListener("visibilitychange", onVisible)
+      clearInterval(timer)
+    }
+  }, [syncPending])
 
   const visitedIds = useMemo(() => new Set(visits.map((v) => v.landmarkId)), [visits])
   const recentVisit = visits[0] ?? null
@@ -123,20 +219,46 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
     [position],
   )
 
+  // Nearby places come from two places at once: the live sources (Wikipedia,
+  // OpenStreetMap, NPS — needs signal) and the on-phone database of National
+  // Register sites and Texas markers (always works). Live results show as soon
+  // as they arrive; on-phone ones are merged in without duplicates.
   const loadLandmarks = useCallback(async (lat: number, lng: number, r: number) => {
+    const seq = ++loadSeq.current
     setLoadingLandmarks(true)
     setLandmarkError(null)
-    try {
-      const res = await fetch(`/api/landmarks?lat=${lat}&lng=${lng}&radius=${r}`)
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || "Failed to load landmarks")
-      setLandmarks(data.landmarks as Landmark[])
-    } catch (err) {
-      setLandmarkError(err instanceof Error ? err.message : "Something went wrong")
-      setLandmarks([])
-    } finally {
-      setLoadingLandmarks(false)
+    setOfflineResults(false)
+    const localPromise = nearbyPlaces(lat, lng, r).catch(() => null)
+    let live: Landmark[] | null = null
+    let liveError = "Something went wrong"
+    if (navigator.onLine) {
+      try {
+        const res = await fetch(`/api/landmarks?lat=${lat}&lng=${lng}&radius=${r}`)
+        const data = await res.json()
+        if (!res.ok) throw new Error(data.error || "Failed to load landmarks")
+        live = data.landmarks as Landmark[]
+      } catch (err) {
+        liveError = err instanceof Error ? err.message : liveError
+      }
     }
+    if (seq !== loadSeq.current) return
+    if (live) {
+      setLandmarks(live)
+      setLoadingLandmarks(false)
+      const local = await localPromise
+      if (seq === loadSeq.current && local?.length) setLandmarks(mergePlaces(live, local))
+      return
+    }
+    const local = await localPromise
+    if (seq !== loadSeq.current) return
+    if (local) {
+      setLandmarks(local)
+      setOfflineResults(true)
+    } else {
+      setLandmarkError(liveError)
+      setLandmarks([])
+    }
+    setLoadingLandmarks(false)
   }, [])
 
   // Set the active location (from GPS or a manual search) and immediately load
@@ -207,6 +329,11 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
       event.preventDefault()
       const name = query.trim()
       if (!name) return
+      if (!navigator.onLine) {
+        setGeoStatus("error")
+        setGeoError("Town search needs a signal. Use your current location instead — GPS works without service.")
+        return
+      }
       setSearching(true)
       setGeoStatus("locating")
       setGeoError(null)
@@ -236,27 +363,37 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
     [position, loadLandmarks],
   )
 
-  // Search Wikipedia by NAME for a specific landmark (anywhere), so you can log
-  // a place you're walking past even if it wasn't in the nearby list.
+  // Search by NAME for a specific landmark (anywhere), so you can log a place
+  // you're walking past even if it wasn't in the nearby list. Searches the
+  // on-phone National Register + Texas marker database (works offline) and,
+  // with signal, Wikipedia too.
   const searchByName = useCallback(async () => {
     const q = listQuery.trim()
     if (!q) return
     setNameSearching(true)
     setNameSearchedFor(q)
-    try {
-      const params = new URLSearchParams({ q })
-      if (position) {
-        params.set("lat", String(position.lat))
-        params.set("lng", String(position.lng))
+    const localPromise = searchPlaces(q, position).catch(() => [] as Landmark[])
+    let live: Landmark[] = []
+    if (navigator.onLine) {
+      try {
+        const params = new URLSearchParams({ q })
+        if (position) {
+          params.set("lat", String(position.lat))
+          params.set("lng", String(position.lng))
+        }
+        const res = await fetch(`/api/landmark-search?${params.toString()}`)
+        const data = await res.json()
+        live = (data.landmarks as Landmark[]) ?? []
+      } catch {
+        live = []
       }
-      const res = await fetch(`/api/landmark-search?${params.toString()}`)
-      const data = await res.json()
-      setNameResults((data.landmarks as Landmark[]) ?? [])
-    } catch {
-      setNameResults([])
-    } finally {
-      setNameSearching(false)
     }
+    const local = await localPromise
+    // Official places (exact matches for what's on the sign) lead; Wikipedia's
+    // looser full-text matches follow.
+    const merged = mergePlaces(local, live)
+    setNameResults(position ? merged : [...local, ...merged.filter((l) => !local.includes(l))])
+    setNameSearching(false)
   }, [listQuery, position])
 
   const clearNameSearch = useCallback(() => {
@@ -265,31 +402,48 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
     setNameSearchedFor("")
   }, [])
 
+  // Save a check-in: straight to the server with signal, otherwise onto the
+  // phone to sync later. Returns false only if the server refused it.
+  const saveCheckIn = useCallback(async (input: CheckInInput): Promise<boolean> => {
+    if (navigator.onLine) {
+      try {
+        const row = await checkIn(input)
+        setToast({ kind: "logged", visitId: row.id, name: input.name, offline: false })
+        try {
+          setVisits(withPending(await getVisits()))
+        } catch {
+          setVisits((prev) => withPending([row, ...prev]))
+        }
+        return true
+      } catch (err) {
+        if (!isNetworkError(err)) return false
+      }
+    }
+    const pending = enqueueCheckIn(input)
+    setVisits((prev) => [pendingToVisit(pending), ...prev])
+    setPendingCount(readQueue().length)
+    setToast({ kind: "logged", visitId: pending.tempId, name: input.name, offline: true })
+    return true
+  }, [])
+
   const handleCheckIn = useCallback(
     async (landmark: Landmark) => {
       setPendingId(landmark.id)
-      try {
-        const row = await checkIn({
-          landmarkId: landmark.id,
-          name: landmark.name,
-          description: landmark.description,
-          category: landmark.category,
-          lat: landmark.lat,
-          lng: landmark.lng,
-          wikipedia: landmark.wikipedia,
-          imageUrl: landmark.imageUrl,
-          visitedBy: who,
-        })
-        const fresh = await getVisits()
-        setVisits(fresh)
-        setToast({ visitId: row.id, name: landmark.name })
-      } catch {
-        setLandmarkError("Couldn't save your check-in. Please try again.")
-      } finally {
-        setPendingId(null)
-      }
+      const ok = await saveCheckIn({
+        landmarkId: landmark.id,
+        name: landmark.name,
+        description: landmark.description,
+        category: landmark.category,
+        lat: landmark.lat,
+        lng: landmark.lng,
+        wikipedia: landmark.wikipedia,
+        imageUrl: landmark.imageUrl,
+        visitedBy: who,
+      })
+      if (!ok) setLandmarkError("Couldn't save your check-in. Please try again.")
+      setPendingId(null)
     },
-    [who],
+    [who, saveCheckIn],
   )
 
   // Log a marker by hand at the current location. Uses a unique id so it never
@@ -299,37 +453,48 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
     const name = markerName.trim()
     if (!name) return
     setSavingMarker(true)
-    try {
-      const row = await checkIn({
-        landmarkId: `manual/${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        name,
-        category: "Historical marker",
-        description: null,
-        lat: position.lat,
-        lng: position.lng,
-        note: markerNote.trim() || null,
-        wikipedia: null,
-        imageUrl: null,
-        visitedBy: who,
-      })
-      const fresh = await getVisits()
-      setVisits(fresh)
+    const ok = await saveCheckIn({
+      landmarkId: `manual/${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name,
+      category: "Historical marker",
+      description: null,
+      lat: position.lat,
+      lng: position.lng,
+      note: markerNote.trim() || null,
+      wikipedia: null,
+      imageUrl: null,
+      visitedBy: who,
+    })
+    if (ok) {
       setMarkerName("")
       setMarkerNote("")
       setAddingMarker(false)
       setTab("visited")
-      setToast({ visitId: row.id, name })
-    } catch {
+    } else {
       setLandmarkError("Couldn't save that marker. Please try again.")
-    } finally {
-      setSavingMarker(false)
     }
-  }, [position, markerName, markerNote, who])
+    setSavingMarker(false)
+  }, [position, markerName, markerNote, who, saveCheckIn])
 
   const handleDelete = useCallback(async (id: number) => {
+    const before = visits
     setVisits((prev) => prev.filter((v) => v.id !== id))
-    await deleteVisit(id)
-  }, [])
+    if (id < 0) {
+      // Still waiting to sync: just drop it from the phone.
+      removeQueued(id)
+      setPendingCount(readQueue().length)
+      return
+    }
+    try {
+      await deleteVisit(id)
+    } catch (err) {
+      setVisits(before)
+      setToast({
+        kind: "notice",
+        text: isNetworkError(err) ? "No signal — try removing it again when you have service." : "Couldn't remove it.",
+      })
+    }
+  }, [visits])
 
   // The toast fades on its own after a few seconds.
   useEffect(() => {
@@ -339,15 +504,28 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
   }, [toast])
 
   const undoCheckIn = useCallback(() => {
-    if (!toast) return
+    if (toast?.kind !== "logged") return
     setToast(null)
     void handleDelete(toast.visitId)
   }, [toast, handleDelete])
 
   const handleSaveNote = useCallback(async (id: number, note: string) => {
+    const before = visits
     setVisits((prev) => prev.map((v) => (v.id === id ? { ...v, note: note.trim() || null } : v)))
-    await updateNote(id, note)
-  }, [])
+    if (id < 0) {
+      updateQueuedNote(id, note)
+      return
+    }
+    try {
+      await updateNote(id, note)
+    } catch (err) {
+      setVisits(before)
+      setToast({
+        kind: "notice",
+        text: isNetworkError(err) ? "No signal — your note wasn't saved. Try again with service." : "Couldn't save the note.",
+      })
+    }
+  }, [visits])
 
   return (
     <div className="flex flex-col gap-5">
@@ -652,6 +830,14 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
                 </button>
               ))}
             </div>
+            {offlineResults ? (
+              <p className="flex items-start gap-2 rounded-2xl bg-accent/20 p-3 text-sm leading-relaxed text-accent-foreground">
+                <CloudOff className="mt-0.5 size-4 shrink-0" aria-hidden />
+                {online
+                  ? "Couldn't reach the live sources, so these are the National Register sites and Texas markers saved on your phone."
+                  : "No signal — showing National Register sites and Texas markers saved on your phone."}
+              </p>
+            ) : null}
             {filteredLandmarks.length === 0 && listQuery.trim() ? (
               <p className="rounded-2xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
                 Nothing nearby matches &ldquo;{listQuery.trim()}&rdquo;.
@@ -672,7 +858,8 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
             {listQuery.trim() ? (
               <div className="flex flex-col gap-3 rounded-2xl border border-border bg-muted/40 p-4">
                 <p className="text-sm leading-relaxed text-muted-foreground">
-                  Walking past a specific landmark that isn&apos;t listed? Search for it by name and log it directly.
+                  Walking past a specific landmark that isn&apos;t listed? Search every National Register site and
+                  Texas historical marker by name{online ? ", plus Wikipedia," : ""} and log it directly.
                 </p>
                 <button
                   type="button"
@@ -786,23 +973,52 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
         <VisitLog visits={visits} onDelete={handleDelete} onSaveNote={handleSaveNote} />
       )}
 
+      <p className="flex items-center justify-center gap-1.5 text-center text-xs text-muted-foreground">
+        {placesStatus === "ready" ? (
+          <>
+            <CloudOff className="size-3.5" aria-hidden />
+            {PLACES_COUNT.toLocaleString()} historic places saved for no-signal use
+          </>
+        ) : placesStatus === "loading" ? (
+          "Saving historic places for no-signal use…"
+        ) : (
+          "Open Waymarks once with a signal to save historic places for no-signal use."
+        )}
+        {pendingCount ? ` · ${pendingCount} check-in${pendingCount === 1 ? "" : "s"} waiting for signal` : ""}
+      </p>
+
       {toast ? (
         <div className="pointer-events-none fixed inset-x-0 bottom-0 z-[1100] flex justify-center px-4 pb-[max(1.25rem,env(safe-area-inset-bottom))]">
           <div
             role="status"
             className="waymarks-toast pointer-events-auto flex w-full max-w-md items-center gap-3 rounded-2xl border border-white/10 bg-[oklch(0.27_0.028_47)] py-2 pr-2 pl-4 text-[oklch(0.97_0.014_83)] shadow-xl"
           >
-            <CheckCircle2 className="size-5 shrink-0 text-[oklch(0.8_0.11_72)]" aria-hidden />
-            <p className="min-w-0 flex-1 truncate text-sm">
-              Logged <span className="font-semibold">{toast.name}</span>
-            </p>
-            <button
-              type="button"
-              onClick={undoCheckIn}
-              className="inline-flex min-h-10 shrink-0 items-center rounded-full px-3 text-sm font-semibold text-[oklch(0.8_0.11_72)] transition-colors hover:bg-white/10"
-            >
-              Undo
-            </button>
+            {toast.kind === "logged" ? (
+              <>
+                {toast.offline ? (
+                  <CloudOff className="size-5 shrink-0 text-[oklch(0.8_0.11_72)]" aria-hidden />
+                ) : (
+                  <CheckCircle2 className="size-5 shrink-0 text-[oklch(0.8_0.11_72)]" aria-hidden />
+                )}
+                <p className="min-w-0 flex-1 text-sm">
+                  <span className="block truncate">
+                    {toast.offline ? "Saved" : "Logged"} <span className="font-semibold">{toast.name}</span>
+                  </span>
+                  {toast.offline ? (
+                    <span className="block text-xs opacity-75">No signal — it&apos;ll sync when you&apos;re back in range</span>
+                  ) : null}
+                </p>
+                <button
+                  type="button"
+                  onClick={undoCheckIn}
+                  className="inline-flex min-h-10 shrink-0 items-center rounded-full px-3 text-sm font-semibold text-[oklch(0.8_0.11_72)] transition-colors hover:bg-white/10"
+                >
+                  Undo
+                </button>
+              </>
+            ) : (
+              <p className="min-w-0 flex-1 py-2 pr-2 text-sm">{toast.text}</p>
+            )}
           </div>
         </div>
       ) : null}

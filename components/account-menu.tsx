@@ -6,6 +6,7 @@ import Link from "next/link"
 import { Fingerprint, LogOut, Ticket, User } from "lucide-react"
 
 import { authClient } from "@/lib/auth-client"
+import { clearOfflineData } from "@/lib/offline-visits"
 
 export function AccountMenu({ username, isOwner = false }: { username: string; isOwner?: boolean }) {
   const router = useRouter()
@@ -24,6 +25,8 @@ export function AccountMenu({ username, isOwner = false }: { username: string; i
   }, [open])
 
   async function handleSignOut() {
+    // Forget this account's saved page and log copy on this phone.
+    await clearOfflineData()
     await authClient.signOut()
     router.push("/sign-in")
     router.refresh()

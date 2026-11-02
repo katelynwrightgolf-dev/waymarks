@@ -1,6 +1,7 @@
 import { Analytics } from "@vercel/analytics/next"
 import type { Metadata, Viewport } from "next"
 import { Fraunces, Nunito_Sans } from "next/font/google"
+import { ServiceWorker } from "@/components/service-worker"
 import "./globals.css"
 
 const fraunces = Fraunces({
@@ -48,6 +49,7 @@ export default function RootLayout({
     <html lang="en" className={`${fraunces.variable} ${nunitoSans.variable}`}>
       <body className="bg-background font-sans antialiased">
         {children}
+        <ServiceWorker />
         {process.env.NODE_ENV === "production" && <Analytics />}
       </body>
     </html>

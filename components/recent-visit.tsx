@@ -2,11 +2,12 @@
 
 import type { Visit } from "@/lib/db/schema"
 import { wikipediaUrl } from "@/lib/landmarks"
+import { placeInfoUrl } from "@/lib/places"
 import { fullDate, timeAgo } from "@/lib/time"
 import { ExternalLink, MapPin, Navigation } from "lucide-react"
 
 export function RecentVisit({ visit }: { visit: Visit }) {
-  const wiki = wikipediaUrl(visit.wikipedia)
+  const wiki = wikipediaUrl(visit.wikipedia) ?? placeInfoUrl(visit.landmarkId)
   const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${visit.lat},${visit.lng}`
 
   return (

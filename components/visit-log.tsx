@@ -2,8 +2,9 @@
 
 import type { Visit } from "@/lib/db/schema"
 import { wikipediaUrl } from "@/lib/landmarks"
+import { placeInfoUrl } from "@/lib/places"
 import { dayKey, dayLabel, timeOfDay } from "@/lib/time"
-import { ExternalLink, MapPin, Pencil, Trash2, X } from "lucide-react"
+import { CloudOff, ExternalLink, MapPin, Pencil, Trash2, X } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 
 type VisitLogProps = {
@@ -56,7 +57,7 @@ export function VisitLog({ visits, onDelete, onSaveNote }: VisitLogProps) {
           </h3>
           <ul className="flex flex-col gap-3">
             {day.visits.map((visit) => {
-              const wiki = wikipediaUrl(visit.wikipedia)
+              const wiki = wikipediaUrl(visit.wikipedia) ?? placeInfoUrl(visit.landmarkId)
               const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${visit.lat},${visit.lng}`
               const editing = editingId === visit.id
               const confirming = confirmingId === visit.id
@@ -81,6 +82,15 @@ export function VisitLog({ visits, onDelete, onSaveNote }: VisitLogProps) {
                         {visit.category ? <span>{visit.category}</span> : null}
                         {visit.category ? <span aria-hidden>·</span> : null}
                         <span>{timeOfDay(visit.visitedAt)}</span>
+                    {visit.id < 0 ? (
+                      <>
+                        <span aria-hidden>·</span>
+                        <span className="inline-flex items-center gap-1 rounded-full bg-accent/25 px-1.5 font-medium text-accent-foreground">
+                          <CloudOff className="size-3" aria-hidden />
+                          Waiting for signal
+                        </span>
+                      </>
+                    ) : null}
                         <span aria-hidden>·</span>
                         <span>{visit.visitedBy}</span>
                       </div>

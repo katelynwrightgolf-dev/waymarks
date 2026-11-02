@@ -1,6 +1,7 @@
 "use client"
 
 import { formatDistance, wikipediaUrl, type Landmark } from "@/lib/landmarks"
+import { placeInfoUrl } from "@/lib/places"
 import { Check, CheckCircle2, ExternalLink, Loader2, MapPin, Sparkles } from "lucide-react"
 import { useCallback, useState } from "react"
 
@@ -87,7 +88,7 @@ export function NearbyList({
         const visited = visitedIds.has(lm.id)
         const selected = selectedId === lm.id
         const pending = pendingId === lm.id
-        const wiki = wikipediaUrl(lm.wikipedia)
+        const wiki = wikipediaUrl(lm.wikipedia) ?? placeInfoUrl(lm.id)
         const facts = factsById[lm.id]
 
         return (

@@ -35,10 +35,35 @@ export type CheckInInput = {
   visitedBy?: string
   wikipedia?: string | null
   imageUrl?: string | null
+  /** When it actually happened, for check-ins saved offline and synced later. */
+  visitedAt?: string
+}
+
+/** Accept a client-supplied time only if it's plausible (past year, not future). */
+function parseVisitedAt(raw?: string): Date | null {
+  if (!raw) return null
+  const at = new Date(raw)
+  const t = at.getTime()
+  const now = Date.now()
+  if (Number.isNaN(t) || t > now + 5 * 60_000 || t < now - 365 * 86_400_000) return null
+  return at
 }
 
 export async function checkIn(input: CheckInInput): Promise<Visit> {
   const userId = await getUserId()
+  const visitedAt = parseVisitedAt(input.visitedAt)
+  if (visitedAt) {
+    // An offline check-in whose sync is retried (e.g. the reply was lost when
+    // signal dropped) must not be logged twice.
+    const [existing] = await db
+      .select()
+      .from(visits)
+      .where(
+        and(eq(visits.userId, userId), eq(visits.landmarkId, input.landmarkId), eq(visits.visitedAt, visitedAt)),
+      )
+      .limit(1)
+    if (existing) return existing
+  }
   const [row] = await db
     .insert(visits)
     .values({
@@ -53,6 +78,7 @@ export async function checkIn(input: CheckInInput): Promise<Visit> {
       visitedBy: input.visitedBy?.trim() || "Us",
       wikipedia: input.wikipedia ?? null,
       imageUrl: input.imageUrl ?? null,
+      ...(visitedAt ? { visitedAt } : {}),
     })
     .returning()
   revalidatePath("/")
