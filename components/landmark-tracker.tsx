@@ -35,8 +35,8 @@ const RADIUS_OPTIONS = [
   { label: "¼ mi", value: 400 },
   { label: "½ mi", value: 800 },
   { label: "1 mi", value: 1600 },
-  { label: "3 mi", value: 4800 },
-  { label: "6 mi", value: 9700 },
+  { label: "5 mi", value: 8047 },
+  { label: "10 mi", value: 16093 },
 ]
 
 const WHO_OPTIONS = ["Us", "Me", "Matt"]
