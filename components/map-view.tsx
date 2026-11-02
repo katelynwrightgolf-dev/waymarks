@@ -24,6 +24,11 @@ function themeColor(variable: string, fallback: string) {
   return value || fallback
 }
 
+// Place names come from Wikipedia/OSM; escape them before they go into popup HTML.
+function escapeHtml(value: string) {
+  return value.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`)
+}
+
 function pinIcon(color: string, selected: boolean) {
   const size = selected ? 28 : 20
   return L.divIcon({
@@ -73,8 +78,12 @@ export default function MapView({
     })
     mapRef.current = map
 
-    L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    // CARTO's basemaps now require an API key (every tile came back as an
+    // "API KEY REQUIRED" placeholder), so use OpenStreetMap's own tiles. They
+    // get a warm tint in globals.css (.waymarks-map) to match the app.
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
     }).addTo(map)
 
     markerLayerRef.current = L.layerGroup().addTo(map)
@@ -128,7 +137,7 @@ export default function MapView({
         icon: pinIcon(visited ? accent : primary, selectedId === lm.id),
       })
         .bindPopup(
-          `<strong>${lm.name}</strong><br/>${lm.category ?? "Landmark"}${visited ? " · visited" : ""}`,
+          `<strong>${escapeHtml(lm.name)}</strong><br/>${escapeHtml(lm.category ?? "Landmark")}${visited ? " · visited" : ""}`,
         )
         .on("click", () => onSelectRef.current(lm.id))
       layer.addLayer(marker)
@@ -142,5 +151,5 @@ export default function MapView({
     }
   }, [landmarks, visitedIds, selectedId, fitToLandmarks])
 
-  return <div ref={containerRef} className="h-full w-full" style={{ background: "var(--muted)" }} />
+  return <div ref={containerRef} className="waymarks-map h-full w-full" style={{ background: "var(--muted)" }} />
 }

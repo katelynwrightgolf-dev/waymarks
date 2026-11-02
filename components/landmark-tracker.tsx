@@ -3,9 +3,21 @@
 import { checkIn, deleteVisit, getVisits, updateNote } from "@/app/actions/visits"
 import type { Visit } from "@/lib/db/schema"
 import type { Landmark } from "@/lib/landmarks"
-import { AlertTriangle, Check, Compass, Loader2, LocateFixed, MapPin, Plus, Search, X } from "lucide-react"
+import {
+  AlertTriangle,
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  Compass,
+  Loader2,
+  LocateFixed,
+  MapPin,
+  Plus,
+  Search,
+  X,
+} from "lucide-react"
 import dynamic from "next/dynamic"
-import { type FormEvent, useCallback, useMemo, useRef, useState } from "react"
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { NearbyList } from "./nearby-list"
 import { RecentVisit } from "./recent-visit"
 import { VisitLog } from "./visit-log"
@@ -60,6 +72,10 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
   const [markerName, setMarkerName] = useState("")
   const [markerNote, setMarkerNote] = useState("")
   const [savingMarker, setSavingMarker] = useState(false)
+  // Re-open the full "Where are you?" card after a location is set.
+  const [editingLocation, setEditingLocation] = useState(false)
+  // "Logged ✓ — Undo" confirmation after a check-in.
+  const [toast, setToast] = useState<{ visitId: number; name: string } | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
 
   const visitedIds = useMemo(() => new Set(visits.map((v) => v.landmarkId)), [visits])
@@ -131,6 +147,7 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
       setLocationLabel(label)
       setGeoStatus("ready")
       setGeoError(null)
+      setEditingLocation(false)
       void loadLandmarks(lat, lng, radius)
     },
     [loadLandmarks, radius],
@@ -163,6 +180,23 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 },
     )
   }, [applyLocation])
+
+  // If location access was already granted, find nearby landmarks as soon as
+  // the app opens instead of waiting for a tap. Never prompts on its own.
+  useEffect(() => {
+    let cancelled = false
+    navigator.permissions
+      ?.query({ name: "geolocation" })
+      .then((status) => {
+        if (!cancelled && status.state === "granted") locate()
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+    // Only on first load.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Manual location: geocode a place name (city, town, landmark, or address)
   // through our server route so the app works even when device GPS is blocked
@@ -235,7 +269,7 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
     async (landmark: Landmark) => {
       setPendingId(landmark.id)
       try {
-        await checkIn({
+        const row = await checkIn({
           landmarkId: landmark.id,
           name: landmark.name,
           description: landmark.description,
@@ -248,6 +282,7 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
         })
         const fresh = await getVisits()
         setVisits(fresh)
+        setToast({ visitId: row.id, name: landmark.name })
       } catch {
         setLandmarkError("Couldn't save your check-in. Please try again.")
       } finally {
@@ -265,7 +300,7 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
     if (!name) return
     setSavingMarker(true)
     try {
-      await checkIn({
+      const row = await checkIn({
         landmarkId: `manual/${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         name,
         category: "Historical marker",
@@ -283,6 +318,7 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
       setMarkerNote("")
       setAddingMarker(false)
       setTab("visited")
+      setToast({ visitId: row.id, name })
     } catch {
       setLandmarkError("Couldn't save that marker. Please try again.")
     } finally {
@@ -295,6 +331,19 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
     await deleteVisit(id)
   }, [])
 
+  // The toast fades on its own after a few seconds.
+  useEffect(() => {
+    if (!toast) return
+    const t = setTimeout(() => setToast(null), 5000)
+    return () => clearTimeout(t)
+  }, [toast])
+
+  const undoCheckIn = useCallback(() => {
+    if (!toast) return
+    setToast(null)
+    void handleDelete(toast.visitId)
+  }, [toast, handleDelete])
+
   const handleSaveNote = useCallback(async (id: number, note: string) => {
     setVisits((prev) => prev.map((v) => (v.id === id ? { ...v, note: note.trim() || null } : v)))
     await updateNote(id, note)
@@ -304,132 +353,165 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
     <div className="flex flex-col gap-5">
       {recentVisit ? <RecentVisit visit={recentVisit} /> : null}
 
-      {/* Location controls */}
-      <section className="rounded-3xl border border-border bg-card p-5">
-        <div className="flex items-center gap-2 text-sm font-semibold text-card-foreground">
-          <Compass className="size-5 text-primary" aria-hidden />
-          Where are you?
-        </div>
-
-        <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-          Type your city or town to see historic landmarks around it.
-        </p>
-
-        <form onSubmit={searchLocation} className="mt-3 flex flex-col gap-2">
-          <div className="relative">
-            <Search
-              className="pointer-events-none absolute top-1/2 left-3 size-5 -translate-y-1/2 text-muted-foreground"
-              aria-hidden
-            />
-            <input
-              ref={searchRef}
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              enterKeyHint="search"
-              placeholder="e.g. Olympia, WA"
-              aria-label="Enter your city or town"
-              className="min-h-12 w-full rounded-full border border-border bg-background pr-4 pl-10 text-base text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none"
-            />
+      {/* Location. Once we know where you are, this collapses to a compact bar
+          so the map and nearby list sit right under your thumb. */}
+      {position && !editingLocation ? (
+        <section className="rounded-3xl border border-border bg-card p-4 shadow-sm">
+          <div className="flex items-center gap-3">
+            <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+              <MapPin className="size-5" aria-hidden />
+            </span>
+            <button
+              type="button"
+              onClick={() => setEditingLocation(true)}
+              aria-label="Change location"
+              className="min-w-0 flex-1 rounded-xl text-left"
+            >
+              <span className="block text-xs font-medium tracking-wide text-muted-foreground uppercase">
+                Exploring near
+              </span>
+              <span className="flex items-center gap-1 font-semibold text-card-foreground">
+                <span className="truncate">{locationLabel ?? "Your location"}</span>
+                <ChevronDown className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={locate}
+              disabled={geoStatus === "locating"}
+              aria-label="Update to my current location"
+              className="inline-flex size-10 shrink-0 items-center justify-center rounded-full border border-border text-foreground transition-colors hover:bg-muted disabled:opacity-60"
+            >
+              {geoStatus === "locating" ? (
+                <Loader2 className="size-4 animate-spin" aria-hidden />
+              ) : (
+                <LocateFixed className="size-4" aria-hidden />
+              )}
+            </button>
           </div>
+
+          {geoError ? (
+            <p className="mt-3 flex items-start gap-2 rounded-xl bg-destructive/10 p-3 text-sm text-destructive">
+              <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
+              {geoError}
+            </p>
+          ) : null}
+
+          <div className="mt-4 mb-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">
+            Search radius
+          </div>
+          <div className="flex gap-1.5">
+            {RADIUS_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => changeRadius(opt.value)}
+                className={`min-h-10 flex-1 rounded-full border px-1 text-sm font-semibold transition-colors ${
+                  radius === opt.value
+                    ? "border-primary bg-primary/10 text-primary"
+                    : "border-border text-muted-foreground hover:bg-muted"
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="mt-4 mb-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">
+            Logging as
+          </div>
+          <div className="flex gap-2">
+            {WHO_OPTIONS.map((option) => (
+              <button
+                key={option}
+                type="button"
+                onClick={() => setWho(option)}
+                className={`min-h-10 flex-1 rounded-full border px-3 text-sm font-semibold transition-colors ${
+                  who === option
+                    ? "border-accent bg-accent/25 text-accent-foreground"
+                    : "border-border text-muted-foreground hover:bg-muted"
+                }`}
+              >
+                {option}
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : (
+        <section className="rounded-3xl border border-border bg-card p-5 shadow-sm">
+          <div className="flex items-center gap-2 text-sm font-semibold text-card-foreground">
+            <Compass className="size-5 text-primary" aria-hidden />
+            <span className="flex-1">Where are you?</span>
+            {position ? (
+              <button
+                type="button"
+                onClick={() => setEditingLocation(false)}
+                aria-label="Keep the current location"
+                className="-my-2 -mr-2 inline-flex size-9 items-center justify-center rounded-full text-muted-foreground hover:bg-muted"
+              >
+                <X className="size-4" aria-hidden />
+              </button>
+            ) : null}
+          </div>
+
+          <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+            We&apos;ll pull up historic buildings and landmarks around you.
+          </p>
+
           <button
-            type="submit"
-            disabled={searching || !query.trim()}
-            className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-full bg-primary px-5 text-base font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-60"
+            type="button"
+            onClick={locate}
+            disabled={geoStatus === "locating"}
+            className="mt-4 inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-full bg-primary px-5 text-base font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-60"
           >
-            {searching ? (
+            {geoStatus === "locating" && !searching ? (
               <Loader2 className="size-5 animate-spin" aria-hidden />
             ) : (
-              <Search className="size-5" aria-hidden />
+              <LocateFixed className="size-5" aria-hidden />
             )}
-            Find landmarks here
+            {geoStatus === "locating" && !searching ? "Finding you…" : "Use my current location"}
           </button>
-        </form>
 
-        <div className="my-3 flex items-center gap-3">
-          <span className="h-px flex-1 bg-border" />
-          <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">or</span>
-          <span className="h-px flex-1 bg-border" />
-        </div>
-
-        <button
-          type="button"
-          onClick={locate}
-          disabled={geoStatus === "locating"}
-          className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-full border border-border px-5 text-base font-semibold text-foreground transition-colors hover:bg-muted disabled:opacity-60"
-        >
-          {geoStatus === "locating" ? (
-            <Loader2 className="size-5 animate-spin" aria-hidden />
-          ) : (
-            <LocateFixed className="size-5" aria-hidden />
-          )}
-          {geoStatus === "locating" ? "Finding you…" : "Use my current location"}
-        </button>
-        <p className="mt-2 text-center text-xs leading-relaxed text-muted-foreground">
-          Uses your device location. If it&apos;s blocked, search your town above instead.
-        </p>
-
-        {geoError ? (
-          <p className="mt-3 flex items-start gap-2 rounded-xl bg-destructive/10 p-3 text-sm text-destructive">
-            <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
-            {geoError}
-          </p>
-        ) : null}
-
-        {position ? (
-          <div className="mt-4">
-            {locationLabel ? (
-              <p className="mb-3 flex items-center gap-1.5 text-sm font-medium text-card-foreground">
-                <MapPin className="size-4 shrink-0 text-primary" aria-hidden />
-                {locationLabel}
-              </p>
-            ) : null}
-
-            <div className="mb-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">
-              Search radius
-            </div>
-            <div className="flex gap-1.5">
-              {RADIUS_OPTIONS.map((opt) => (
-                <button
-                  key={opt.value}
-                  type="button"
-                  onClick={() => changeRadius(opt.value)}
-                  className={`min-h-10 flex-1 rounded-full border px-1 text-sm font-semibold transition-colors ${
-                    radius === opt.value
-                      ? "border-primary bg-primary/10 text-primary"
-                      : "border-border text-muted-foreground hover:bg-muted"
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-
-            <div className="mt-4 mb-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">
-              Logging as
-            </div>
-            <div className="flex gap-2">
-              {WHO_OPTIONS.map((option) => (
-                <button
-                  key={option}
-                  type="button"
-                  onClick={() => setWho(option)}
-                  className={`min-h-10 flex-1 rounded-full border px-3 text-sm font-semibold transition-colors ${
-                    who === option
-                      ? "border-accent bg-accent/25 text-accent-foreground"
-                      : "border-border text-muted-foreground hover:bg-muted"
-                  }`}
-                >
-                  {option}
-                </button>
-              ))}
-            </div>
+          <div className="my-4 flex items-center gap-3">
+            <span className="h-px flex-1 bg-border" />
+            <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">or search a place</span>
+            <span className="h-px flex-1 bg-border" />
           </div>
-        ) : (
-          <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
-            Tap above, or search a city, and we&apos;ll pull up historic buildings and landmarks near that spot.
-          </p>
-        )}
-      </section>
+
+          <form onSubmit={searchLocation} className="flex gap-2">
+            <div className="relative min-w-0 flex-1">
+              <Search
+                className="pointer-events-none absolute top-1/2 left-3 size-5 -translate-y-1/2 text-muted-foreground"
+                aria-hidden
+              />
+              <input
+                ref={searchRef}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                enterKeyHint="search"
+                placeholder="e.g. Olympia, WA"
+                aria-label="Enter a city or town"
+                className="min-h-12 w-full rounded-full border border-border bg-background pr-4 pl-10 text-base text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={searching || !query.trim()}
+              aria-label="Find landmarks here"
+              className="inline-flex min-h-12 shrink-0 items-center justify-center gap-2 rounded-full border border-primary px-5 text-base font-semibold text-primary transition-colors hover:bg-primary/10 disabled:opacity-50"
+            >
+              {searching ? <Loader2 className="size-5 animate-spin" aria-hidden /> : "Go"}
+            </button>
+          </form>
+
+          {geoError ? (
+            <p className="mt-3 flex items-start gap-2 rounded-xl bg-destructive/10 p-3 text-sm text-destructive">
+              <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
+              {geoError}
+            </p>
+          ) : null}
+        </section>
+      )}
 
       {/* Map — pins for nearby results, or every place we've visited. */}
       {tab === "visited" ? (
@@ -552,7 +634,7 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
               {(
                 [
                   { key: "all", label: `All (${landmarks.length})` },
-                    { key: "landmark", label: `Historic (${landmarkCount})` },
+                  { key: "landmark", label: `Historic (${landmarkCount})` },
                   { key: "town", label: `Towns (${townCount})` },
                 ] as const
               ).map((opt) => (
@@ -570,17 +652,7 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
                 </button>
               ))}
             </div>
-            {filteredLandmarks.length > 0 ? (
-              <NearbyList
-                landmarks={filteredLandmarks}
-                visitedIds={visitedIds}
-                selectedId={selectedId}
-                pendingId={pendingId}
-  onSelect={setSelectedId}
-  onCheckIn={handleCheckIn}
-  locationLabel={locationLabel}
-  />
-            ) : listQuery.trim() ? (
+            {filteredLandmarks.length === 0 && listQuery.trim() ? (
               <p className="rounded-2xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
                 Nothing nearby matches &ldquo;{listQuery.trim()}&rdquo;.
               </p>
@@ -590,10 +662,10 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
                 visitedIds={visitedIds}
                 selectedId={selectedId}
                 pendingId={pendingId}
-  onSelect={setSelectedId}
-  onCheckIn={handleCheckIn}
-  locationLabel={locationLabel}
-  />
+                onSelect={setSelectedId}
+                onCheckIn={handleCheckIn}
+                locationLabel={locationLabel}
+              />
             )}
 
             {/* Walking past something not in the list? Search everywhere by name. */}
@@ -713,6 +785,27 @@ export function LandmarkTracker({ initialVisits }: { initialVisits: Visit[] }) {
       ) : (
         <VisitLog visits={visits} onDelete={handleDelete} onSaveNote={handleSaveNote} />
       )}
+
+      {toast ? (
+        <div className="pointer-events-none fixed inset-x-0 bottom-0 z-[1100] flex justify-center px-4 pb-[max(1.25rem,env(safe-area-inset-bottom))]">
+          <div
+            role="status"
+            className="waymarks-toast pointer-events-auto flex w-full max-w-md items-center gap-3 rounded-2xl border border-white/10 bg-[oklch(0.27_0.028_47)] py-2 pr-2 pl-4 text-[oklch(0.97_0.014_83)] shadow-xl"
+          >
+            <CheckCircle2 className="size-5 shrink-0 text-[oklch(0.8_0.11_72)]" aria-hidden />
+            <p className="min-w-0 flex-1 truncate text-sm">
+              Logged <span className="font-semibold">{toast.name}</span>
+            </p>
+            <button
+              type="button"
+              onClick={undoCheckIn}
+              className="inline-flex min-h-10 shrink-0 items-center rounded-full px-3 text-sm font-semibold text-[oklch(0.8_0.11_72)] transition-colors hover:bg-white/10"
+            >
+              Undo
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

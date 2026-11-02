@@ -163,3 +163,78 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* --- Map ------------------------------------------------------------------ */
+/* Warm the OpenStreetMap tiles toward the app's paper-and-terracotta palette. */
+.waymarks-map .leaflet-tile {
+  filter: sepia(0.28) saturate(0.85) brightness(1.02);
+}
+.dark .waymarks-map .leaflet-tile {
+  filter: sepia(0.2) saturate(0.7) brightness(0.72) contrast(1.05);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) .waymarks-map .leaflet-tile {
+    filter: sepia(0.2) saturate(0.7) brightness(0.72) contrast(1.05);
+  }
+}
+
+.waymarks-map .leaflet-popup-content-wrapper {
+  border-radius: 1rem;
+  background: var(--card);
+  color: var(--card-foreground);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.18);
+}
+.waymarks-map .leaflet-popup-tip {
+  background: var(--card);
+}
+.waymarks-map .leaflet-popup-content {
+  margin: 0.75rem 1rem;
+  font-family: var(--font-sans);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+.waymarks-map .leaflet-popup-content strong {
+  font-family: var(--font-serif);
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+.waymarks-map .leaflet-bar {
+  overflow: hidden;
+  border: 1px solid var(--border) !important;
+  border-radius: 0.75rem !important;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.08) !important;
+}
+.waymarks-map .leaflet-bar a {
+  background: var(--card);
+  color: var(--card-foreground);
+  border-color: var(--border);
+}
+.waymarks-map .leaflet-control-attribution {
+  border-top-left-radius: 0.5rem;
+  background: color-mix(in oklch, var(--card) 85%, transparent);
+  color: var(--muted-foreground);
+  font-family: var(--font-sans);
+}
+.waymarks-map .leaflet-control-attribution a {
+  color: var(--primary);
+}
+
+/* Check-in toast: rises in from the bottom. */
+@keyframes waymarks-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(1rem);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.waymarks-toast {
+  animation: waymarks-toast-in 220ms ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .waymarks-toast {
+    animation: none;
+  }
+}

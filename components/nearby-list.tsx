@@ -134,8 +134,13 @@ export function NearbyList({
                 </div>
               </div>
 
+              {/* Long Wikipedia summaries stay to three lines until you tap the card. */}
               {lm.description ? (
-                <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{lm.description}</p>
+                <p
+                  className={`mt-2 text-sm leading-relaxed text-muted-foreground ${selected ? "" : "line-clamp-3"}`}
+                >
+                  {lm.description}
+                </p>
               ) : null}
 
               <div className="mt-3 flex flex-wrap items-center gap-2">
