@@ -16,6 +16,8 @@ type MapViewProps = {
   showMe?: boolean
   // Auto-zoom/pan so every pin is framed, instead of centering on `center`.
   fitToLandmarks?: boolean
+  // Zoom so this search radius (meters) around `center` fills the map.
+  radiusMeters?: number
 }
 
 function themeColor(variable: string, fallback: string) {
@@ -58,6 +60,7 @@ export default function MapView({
   onSelect,
   showMe = true,
   fitToLandmarks = false,
+  radiusMeters,
 }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<L.Map | null>(null)
@@ -86,7 +89,8 @@ export default function MapView({
       // CORS tiles can be kept by the service worker for offline use (opaque
       // ones would eat the browser's storage quota). OSM allows any origin.
       crossOrigin: true,
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+      attribution:
+        '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors · NPS, THC',
     }).addTo(map)
 
     markerLayerRef.current = L.layerGroup().addTo(map)
@@ -115,14 +119,19 @@ export default function MapView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Recenter the map and the "you are here" marker when the location changes.
-  // Skipped when fitToLandmarks is on — bounds fitting owns the viewport there.
+  // Recenter the map and the "you are here" marker when the location changes,
+  // zooming so the chosen search radius fills the map. Skipped when
+  // fitToLandmarks is on — bounds fitting owns the viewport there.
   useEffect(() => {
     const map = mapRef.current
     if (!map || fitToLandmarks) return
-    map.setView(center, map.getZoom(), { animate: true })
+    if (radiusMeters) {
+      map.fitBounds(L.latLng(center).toBounds(radiusMeters * 2), { padding: [12, 12], animate: true })
+    } else {
+      map.setView(center, map.getZoom(), { animate: true })
+    }
     meMarkerRef.current?.setLatLng(center)
-  }, [center, fitToLandmarks])
+  }, [center, fitToLandmarks, radiusMeters])
 
   // Rebuild landmark markers whenever the data or selection changes.
   useEffect(() => {

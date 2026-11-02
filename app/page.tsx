@@ -32,9 +32,6 @@ export default async function HomePage() {
 
       <LandmarkTracker initialVisits={initialVisits} />
 
-      <footer className="mt-10 text-center text-xs text-muted-foreground">
-        Historic places from the National Park Service&apos;s National Register and the Texas Historical Commission
-      </footer>
     </main>
   )
 }
